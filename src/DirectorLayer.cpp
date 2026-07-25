@@ -337,6 +337,9 @@ void DirectorLayer::StartSmokeTest() {
     m_renderSettings.OutputFormat = wantMp4 ? SequenceExporter::Format::Mp4
                                             : SequenceExporter::Format::PngSequence;
     m_renderSettings.IncludeAudio = false; // в демо-проекте звуковой дорожки нет
+    if (const char* samples = std::getenv("D3D_SMOKE_SAMPLES")) {
+        m_renderSettings.Samples = std::atoi(samples);
+    }
     StartRender();
 
     // Если рендер не запустился, ждать его завершения бессмысленно: без этой
@@ -956,6 +959,46 @@ void DirectorLayer::RunBoneCheck() {
     float atStart[3] = {0, 0, 0};
     ReadBoneChannel(*m_scene, id, joint, BoneChannel::Rotation, atStart);
     check(std::fabs(atStart[2]) < 1.0f, "в начале поза вернулась к первому ключу");
+
+    // --- Блендшейпы ---
+    // Морфы идут той же дорогой, что и кости: свойство -> дорожка -> ключ.
+    // Проверяем ту же цепочку, потому что ломается она так же тихо.
+    {
+        AnimatedModelComponent* am =
+            m_scene->Registry().try_get<AnimatedModelComponent>(m_scene->Get(id).Entity());
+        check(am && am->Model && am->Model->MorphCount() > 0, "у демо-модели есть блендшейпы");
+        if (am && am->Model && am->Model->MorphCount() > 0) {
+            check((int)am->MorphWeights.size() == am->Model->MorphCount(),
+                  "веса блендшейпов заведены по числу целей");
+
+            SetCurrentTime(2.0f);
+            const float zero[1] = {0.0f};
+            check(WriteProperty(*m_scene, id, Property::MorphWeight, zero, 0),
+                  "вес блендшейпа записывается");
+            check(m_doc.KeyFromScene(*m_scene, id, Property::MorphWeight, 2.0f, 0),
+                  "ключ на блендшейпе ставится");
+
+            SetCurrentTime(3.0f);
+            const float full[1] = {1.0f};
+            WriteProperty(*m_scene, id, Property::MorphWeight, full, 0);
+            m_doc.KeyFromScene(*m_scene, id, Property::MorphWeight, 3.0f, 0);
+
+            SetCurrentTime(2.5f);
+            float mid[1] = {-1.0f};
+            check(ReadProperty(*m_scene, id, Property::MorphWeight, mid, 0),
+                  "вес блендшейпа читается");
+            check(mid[0] > 0.1f && mid[0] < 0.9f,
+                  "на середине вес блендшейпа между ключами");
+            LOG_INFO("BoneCheck") << "Вес блендшейпа в середине: " << mid[0];
+
+            // Выход за 0..1 выворачивает геометрию — запись обязана его зажать.
+            const float over[1] = {5.0f};
+            WriteProperty(*m_scene, id, Property::MorphWeight, over, 0);
+            float clamped[1] = {0.0f};
+            ReadProperty(*m_scene, id, Property::MorphWeight, clamped, 0);
+            check(clamped[0] <= 1.0f, "вес блендшейпа зажимается в допустимый диапазон");
+        }
+    }
 
     // --- Сброс позы ---
     // Ручная поза снимается, дорожки остаются: следующий Apply снова наложит

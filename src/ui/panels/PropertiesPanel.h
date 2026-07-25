@@ -33,6 +33,8 @@ private:
     // Раздел «Bone» — появляется, когда выбрана кость. Здесь локальные TRS
     // кости с ромбами ключей и кнопки работы с позой.
     void DrawBoneSection(DirectorHost& host);
+    // Раздел «Blend Shapes» — ползунки весов морф-целей с ромбами ключей.
+    void DrawMorphSection(DirectorHost& host);
 };
 
 } // namespace d3d

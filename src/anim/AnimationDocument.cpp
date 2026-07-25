@@ -35,7 +35,8 @@ Track* AnimationDocument::TrackById(int id) {
 }
 
 Track& AnimationDocument::EnsureTrack(int targetId, Property prop, int joint) {
-    if (!IsBoneProperty(prop)) joint = -1; // у обычных свойств кости не бывает
+    // Подындекс есть только у костей и морфов; у остальных свойств он всегда -1.
+    if (!IsBoneProperty(prop) && !IsMorphProperty(prop)) joint = -1;
     if (Track* existing = FindTrack(targetId, prop, joint)) return *existing;
     Track t;
     t.Id = TakeId();

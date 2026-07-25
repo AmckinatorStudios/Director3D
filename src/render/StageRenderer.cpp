@@ -468,11 +468,19 @@ bool StageRenderer::RenderCameraView(Scene& scene, const LightingEnvironment& en
 }
 
 bool StageRenderer::RenderToTarget(Scene& scene, const LightingEnvironment& env, int cameraEntityId,
-                                   Framebuffer& target) {
+                                   Framebuffer& target, glm::vec2 jitterPixels) {
     const int w = target.Width(), h = target.Height();
     const float aspect = (float)w / (float)std::max(h, 1);
     CameraFrameInfo frame = CameraFrameOf(scene, cameraEntityId, aspect);
     if (!frame.HasCamera) return false;
+
+    // Сдвиг проекции на доли пикселя. Правим два элемента матрицы, а не саму
+    // камеру: смещать камеру в мире нельзя — изменился бы параллакс, и
+    // усреднение дало бы не сглаживание, а лёгкое размытие движения.
+    if (jitterPixels.x != 0.0f || jitterPixels.y != 0.0f) {
+        frame.Proj[2][0] += 2.0f * jitterPixels.x / (float)w;
+        frame.Proj[2][1] += 2.0f * jitterPixels.y / (float)h;
+    }
 
     // Сцена рисуется в СВОЙ HDR-буфер, и только потом пост-обработка пишет
     // результат в target. Раньше сюда рисовалось напрямую, и экспортированный

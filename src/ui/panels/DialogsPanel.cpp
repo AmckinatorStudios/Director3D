@@ -420,6 +420,22 @@ void DialogsPanel::DrawRenderSettings(DirectorHost& host) {
     if (ImGui::InputText("##outname", m_renderName, sizeof(m_renderName))) settings.BaseName = m_renderName;
 
     ImGui::Spacing();
+    ImGui::SetNextItemWidth(220.0f);
+    // Сглаживание накоплением. Осмысленные значения — степени двойки; ползунок
+    // по «числу выборок» честнее выпадающего списка «низкое/среднее/высокое»:
+    // здесь прямо видно, во сколько раз вырастет время рендера.
+    ImGui::SliderInt("Сглаживание", &settings.Samples, 1, 16, settings.Samples > 1 ? "%d выборок" : "выкл");
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Кадр снимается несколько раз с микросдвигом и усредняется.\n"
+                          "Убирает лесенку и мерцание тонких деталей — в отличие от\n"
+                          "экранного сглаживания во вьюпорте. Время рендера растёт\n"
+                          "во столько же раз.");
+    }
+    if (settings.Samples > 1) {
+        ImGui::TextDisabled("Рендер будет примерно в %d раз(а) дольше", settings.Samples);
+    }
+
+    ImGui::Spacing();
     ImGui::SetNextItemWidth(150.0f);
     ImGui::DragInt("Кадров за шаг", &settings.FramesPerStep, 0.2f, 1, 30);
     if (ImGui::IsItemHovered()) {

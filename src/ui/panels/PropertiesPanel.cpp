@@ -4,9 +4,12 @@
 
 #include "imgui.h"
 
+#include <algorithm>
+
 #include "anim/BonePose.h"
 #include "anim/DirectorComponents.h"
 #include "sage/render/SkinnedModel.h" // список клипов персонажа в инспекторе
+#include "sage/render/SkinnedModel.h"
 #include "sage/scene/Components.h"
 #include "ui/DirectorHost.h"
 #include "ui/Icons.h"
@@ -190,6 +193,57 @@ bool PropertiesPanel::DrawEffectRow(DirectorHost& host, const char* label, bool*
 //  Панель
 // ============================================================================
 
+void PropertiesPanel::DrawMorphSection(DirectorHost& host) {
+    Scene& scene = host.CurrentScene();
+    GameObject obj = host.SelectedObject();
+    if (!obj.Valid()) return;
+
+    AnimatedModelComponent* am =
+        scene.Registry().try_get<AnimatedModelComponent>(obj.Entity());
+    if (!am || !am->Model || am->Model->MorphCount() == 0) return;
+
+    char title[64];
+    std::snprintf(title, sizeof(title), "Blend Shapes (%d)", am->Model->MorphCount());
+    if (!SectionHeader(title)) return;
+
+    ImGui::Spacing();
+    const std::vector<std::string>& names = am->Model->MorphNames();
+    am->MorphWeights.resize(names.size(), 0.0f);
+
+    bool edited = false;
+    for (size_t i = 0; i < names.size(); ++i) {
+        ImGui::PushID((int)i);
+        RowLabel(names[i].c_str());
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - kKeyColumn);
+        // Диапазон 0..1: за его пределами блендшейп выворачивает геометрию, и
+        // ползунок не должен предлагать этого как норму.
+        if (ImGui::SliderFloat("##w", &am->MorphWeights[i], 0.0f, 1.0f, "%.3f")) edited = true;
+        host.TrackLastItem();
+        DrawKeyDiamond(host, Property::MorphWeight, true, (int)i);
+        ImGui::PopID();
+    }
+
+    if (edited) host.NotifyObjectEdited(obj.Id());
+
+    ImGui::Spacing();
+    if (ImGui::Button("Сбросить все")) {
+        host.PushUndo();
+        std::fill(am->MorphWeights.begin(), am->MorphWeights.end(), 0.0f);
+        host.SetStatus("Блендшейпы сброшены");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Заключить все")) {
+        host.PushUndo();
+        int keyed = 0;
+        for (size_t i = 0; i < names.size(); ++i) {
+            if (host.Document().KeyFromScene(scene, obj.Id(), Property::MorphWeight,
+                                             host.CurrentTime(), (int)i)) ++keyed;
+        }
+        host.SetStatus("Ключей на блендшейпах: " + std::to_string(keyed));
+    }
+    ImGui::Spacing();
+}
+
 void PropertiesPanel::DrawBoneSection(DirectorHost& host) {
     const BoneSelection& bone = host.SelectedBone();
     if (!bone.Valid() || bone.EntityId != host.SelectedId()) return;
@@ -320,6 +374,9 @@ void PropertiesPanel::Draw(DirectorHost& host) {
         ImGui::Spacing();
         if (edited) host.NotifyObjectEdited(id);
     }
+
+    // --- Blend Shapes ---
+    DrawMorphSection(host);
 
     // --- Bone ---
     // Сразу после Transform: когда правишь кость, это и есть главное, ради чего

@@ -12,6 +12,7 @@
 #include "anim/BonePose.h"
 #include "anim/DirectorComponents.h"
 #include "sage/render/SkinnedModel.h"
+#include "sage/render/SkinnedModel.h"
 #include "sage/scene/Components.h"
 #include "ui/DirectorHost.h"
 #include "ui/Icons.h"
@@ -64,6 +65,16 @@ void DrawDiamond(ImDrawList* dl, ImVec2 center, float radius, ImU32 fill, bool s
 }
 
 // Имя объекта для колонки дорожек (объект мог быть удалён — тогда так и пишем).
+// Имя морф-цели сущности по номеру (пусто, если модель ещё не загрузилась).
+std::string MorphName(Scene& scene, int entityId, int index) {
+    GameObject obj = scene.Get(entityId);
+    if (!obj.Valid()) return {};
+    const AnimatedModelComponent* am =
+        scene.Registry().try_get<AnimatedModelComponent>(obj.Entity());
+    if (!am || !am->Model || index < 0 || index >= am->Model->MorphCount()) return {};
+    return am->Model->MorphNames()[(size_t)index];
+}
+
 std::string TargetName(Scene& scene, int id) {
     GameObject obj = scene.Get(id);
     return obj.Valid() ? obj.Name() : std::string("<удалён>");
@@ -422,6 +433,11 @@ float TimelinePanel::DrawTrackHeader(DirectorHost& host, Track& track, const Lay
                                      : JointName(scene, track.TargetId, track.Joint);
         std::snprintf(label, sizeof(label), "%s · %s",
                       bone.empty() ? "?" : bone.c_str(), info.Label);
+    } else if (IsMorphProperty(track.Prop)) {
+        // «Blend Shape» без имени цели неотличимо от соседних: у лица их десятки.
+        const std::string name = MorphName(scene, track.TargetId, track.Joint);
+        std::snprintf(label, sizeof(label), "%s · %s", name.empty() ? "?" : name.c_str(),
+                      info.Label);
     } else {
         std::snprintf(label, sizeof(label), "%s", info.Label);
     }
@@ -436,7 +452,7 @@ float TimelinePanel::DrawTrackHeader(DirectorHost& host, Track& track, const Lay
                           hasKey, !track.Locked, 18.0f)) {
         host.PushUndo();
         if (hasKey) host.Document().RemoveKeysAt(track, host.CurrentTime());
-        else if (IsBoneProperty(track.Prop)) {
+        else if (IsBoneProperty(track.Prop) || IsMorphProperty(track.Prop)) {
             host.Document().KeyFromScene(scene, track.TargetId, track.Prop, host.CurrentTime(),
                                          track.Joint);
         } else {
@@ -464,7 +480,7 @@ float TimelinePanel::DrawTrackHeader(DirectorHost& host, Track& track, const Lay
         ImGui::Separator();
         if (ImGui::MenuItem("Поставить ключ")) {
             host.PushUndo();
-            if (IsBoneProperty(track.Prop)) {
+            if (IsBoneProperty(track.Prop) || IsMorphProperty(track.Prop)) {
                 host.Document().KeyFromScene(scene, track.TargetId, track.Prop, host.CurrentTime(),
                                              track.Joint);
             } else {

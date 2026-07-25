@@ -1,7 +1,10 @@
 #include "anim/Binding.h"
 
+#include <algorithm>
+
 #include "anim/BonePose.h"
 #include "anim/DirectorComponents.h"
+#include "sage/render/SkinnedModel.h"
 #include "sage/scene/Components.h"
 #include "sage/scene/Scene.h"
 
@@ -38,6 +41,7 @@ const std::vector<PropertyInfo> kTable = {
     {Property::BonePosition,        "bonePosition",   "Bone Location",   3, {"X", "Y", "Z"}, {kAxisX, kAxisY, kAxisZ}, false},
     {Property::BoneRotation,        "boneRotation",   "Bone Rotation",   3, {"X", "Y", "Z"}, {kAxisX, kAxisY, kAxisZ}, false},
     {Property::BoneScale,           "boneScale",      "Bone Scale",      3, {"X", "Y", "Z"}, {kAxisX, kAxisY, kAxisZ}, false},
+    {Property::MorphWeight,         "morphWeight",    "Blend Shape",     1, {"", "", ""},    {kScalar, 0, 0},          false},
 };
 
 // Канал кости для костного свойства.
@@ -59,6 +63,8 @@ entt::entity Resolve(Scene& scene, int entityId) {
 } // namespace
 
 const std::vector<PropertyInfo>& PropertyTable() { return kTable; }
+
+bool IsMorphProperty(Property prop) { return prop == Property::MorphWeight; }
 
 bool IsBoneProperty(Property prop) {
     return prop == Property::BonePosition || prop == Property::BoneRotation ||
@@ -89,6 +95,10 @@ bool PropertyApplies(Scene& scene, int entityId, Property prop, int joint) {
         const sage::anim::Skeleton* sk = SkeletonOf(scene, entityId);
         return sk && joint >= 0 && joint < sk->Count();
     }
+    if (IsMorphProperty(prop)) {
+        const AnimatedModelComponent* am = reg.try_get<AnimatedModelComponent>(e);
+        return am && am->Model && joint >= 0 && joint < am->Model->MorphCount();
+    }
     switch (prop) {
         case Property::Position:
         case Property::Rotation:
@@ -116,6 +126,7 @@ bool PropertyApplies(Scene& scene, int entityId, Property prop, int joint) {
         case Property::BonePosition:
         case Property::BoneRotation:
         case Property::BoneScale:
+        case Property::MorphWeight:
             return false; // разобрано выше, до switch
     }
     return false;
@@ -127,6 +138,12 @@ bool ReadProperty(Scene& scene, int entityId, Property prop, float* values, int 
     auto& reg = scene.Registry();
 
     if (IsBoneProperty(prop)) return ReadBoneChannel(scene, entityId, joint, ChannelOf(prop), values);
+    if (IsMorphProperty(prop)) {
+        AnimatedModelComponent* am = reg.try_get<AnimatedModelComponent>(e);
+        if (!am || joint < 0 || joint >= (int)am->MorphWeights.size()) return false;
+        values[0] = am->MorphWeights[(size_t)joint];
+        return true;
+    }
 
     switch (prop) {
         case Property::Position:
@@ -207,6 +224,14 @@ bool WriteProperty(Scene& scene, int entityId, Property prop, const float* value
     auto& reg = scene.Registry();
 
     if (IsBoneProperty(prop)) return WriteBoneChannel(scene, entityId, joint, ChannelOf(prop), values);
+    if (IsMorphProperty(prop)) {
+        AnimatedModelComponent* am = reg.try_get<AnimatedModelComponent>(e);
+        if (!am || joint < 0 || joint >= (int)am->MorphWeights.size()) return false;
+        // Вне [0,1] блендшейп даёт вывернутую геометрию; кривая же легко
+        // выскакивает за диапазон при сглаживании между ключами.
+        am->MorphWeights[(size_t)joint] = std::clamp(values[0], 0.0f, 1.0f);
+        return true;
+    }
 
     switch (prop) {
         case Property::Position:
@@ -285,7 +310,7 @@ std::vector<Property> ApplicableProperties(Scene& scene, int entityId) {
     for (const PropertyInfo& info : kTable) {
         // Костные свойства выбираются не здесь: у них своё меню под скелетом,
         // где заодно выбирается кость. В списке свойств объекта им не место.
-        if (IsBoneProperty(info.Id)) continue;
+        if (IsBoneProperty(info.Id) || IsMorphProperty(info.Id)) continue;
         if (PropertyApplies(scene, entityId, info.Id)) out.push_back(info.Id);
     }
     return out;

@@ -8,6 +8,7 @@
 #include "sage/render/Framebuffer.h"
 
 class Scene;
+struct LightingEnvironment;
 
 namespace d3d {
 
@@ -50,6 +51,12 @@ public:
         bool IncludeAudio = true; // подмешать звуковую дорожку проекта в MP4
         int Width = 1920;
         int Height = 1080;
+        // Сглаживание накоплением: кадр снимается Samples раз с микросдвигом
+        // проекции, результаты усредняются. 1 — выключено. Это НЕ экранный
+        // фильтр: усреднение убирает и лесенку, и мерцание тонких деталей, и
+        // шум шейдеров — ценой линейного роста времени рендера. В чистовом
+        // выводе время есть, в интерактивном вьюпорте его нет (там FXAA).
+        int Samples = 1;
         float StartTime = 0.0f;
         float EndTime = 0.0f;   // 0 — до конца ролика
         int CameraId = -1;      // с какой камеры снимаем
@@ -67,6 +74,14 @@ public:
     bool Step(Scene& scene, StageRenderer& renderer, AnimationDocument& doc);
 
     void Cancel();
+
+private:
+    // Снимает кадр несколько раз с микросдвигом и усредняет прямо в m_frameBuffer.
+    // false — камера пропала посреди экспорта.
+    bool RenderAccumulated(Scene& scene, StageRenderer& renderer, const LightingEnvironment& env,
+                           int samples);
+
+public:
 
     bool Active() const { return m_active; }
     bool Failed() const { return m_failed; }
@@ -88,6 +103,9 @@ private:
     // мегабайты на каждый кадр — это заметная нагрузка на аллокатор.
     VideoWriter m_video;
     std::vector<unsigned char> m_frameBuffer;
+    // Накопитель для сглаживания. Сумма в float: складывать сотни выборок в
+    // байтах — это потерять всё, ради чего сглаживание затевалось.
+    std::vector<float> m_accum;
     std::string m_resultPath;
     bool m_active = false;
     bool m_failed = false;

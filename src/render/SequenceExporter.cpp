@@ -108,7 +108,13 @@ bool SequenceExporter::Step(Scene& scene, StageRenderer& renderer, AnimationDocu
 
         LightingEnvironment env = CollectVisibleLighting(scene);
         renderer.RenderShadow(scene, env);
-        if (!renderer.RenderToTarget(scene, env, m_settings.CameraId, *m_target)) {
+
+        const int samples = std::max(m_settings.Samples, 1);
+        if (samples == 1) {
+            if (!renderer.RenderToTarget(scene, env, m_settings.CameraId, *m_target)) {
+                return fail("камера пропала посреди экспорта");
+            }
+        } else if (!RenderAccumulated(scene, renderer, env, samples)) {
             return fail("камера пропала посреди экспорта");
         }
 
@@ -155,6 +161,44 @@ bool SequenceExporter::Step(Scene& scene, StageRenderer& renderer, AnimationDocu
         }
         LOG_INFO("Export") << "Экспорт завершён: " << m_total << " кадр(ов) в " << m_resultPath;
         return false;
+    }
+    return true;
+}
+
+bool SequenceExporter::RenderAccumulated(Scene& scene, StageRenderer& renderer,
+                                         const LightingEnvironment& env, int samples) {
+    const size_t pixels = (size_t)m_settings.Width * m_settings.Height * 3u;
+    if (m_accum.size() != pixels) m_accum.assign(pixels, 0.0f);
+    else std::fill(m_accum.begin(), m_accum.end(), 0.0f);
+    if (m_frameBuffer.size() != pixels) m_frameBuffer.assign(pixels, 0);
+
+    for (int s = 0; s < samples; ++s) {
+        // Последовательность Холтона по основаниям 2 и 3: точки ложатся в
+        // пиксель равномерно при ЛЮБОМ числе выборок, в отличие от регулярной
+        // сетки (она требует полного квадрата) и случайных точек (те сбиваются
+        // в кучки, и часть пикселя остаётся неохваченной).
+        auto halton = [](int index, int base) {
+            float result = 0.0f, f = 1.0f;
+            for (int i = index + 1; i > 0; i /= base) {
+                f /= (float)base;
+                result += f * (float)(i % base);
+            }
+            return result;
+        };
+        const glm::vec2 jitter(halton(s, 2) - 0.5f, halton(s, 3) - 0.5f);
+
+        if (!renderer.RenderToTarget(scene, env, m_settings.CameraId, *m_target, jitter)) {
+            return false;
+        }
+        m_target->Bind();
+        sage::rhi::GraphicsDevice::Get().ReadPixelsRGB(0, 0, m_settings.Width, m_settings.Height,
+                                                       m_frameBuffer.data());
+        for (size_t i = 0; i < pixels; ++i) m_accum[i] += (float)m_frameBuffer[i];
+    }
+
+    const float inv = 1.0f / (float)samples;
+    for (size_t i = 0; i < pixels; ++i) {
+        m_frameBuffer[i] = (unsigned char)std::lround(std::min(m_accum[i] * inv, 255.0f));
     }
     return true;
 }
