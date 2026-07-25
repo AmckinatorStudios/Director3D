@@ -1,7 +1,10 @@
 #pragma once
 #include <string>
+#include <vector>
 
 #include <glm/glm.hpp>
+
+#include "sage/anim/Skeleton.h"
 
 // ---------------------------------------------------------------------------
 // Собственные компоненты Director 3D.
@@ -56,6 +59,45 @@ struct StageItemComponent {
 // чего собрана сцена, а повторный импорт того же файла переиспользует путь.
 struct SourceAssetComponent {
     std::string Path;
+};
+
+// Поза персонажа, поставленная РУКАМИ, — то, чем ручная анимация костей
+// отличается от проигрывания готового клипа.
+//
+// Хранит переопределения локальных TRS костей (sage::anim::JointPose): движок
+// применяет их поверх позы клипа, покостно и покомпонентно. Поэтому руками
+// правится ровно то, что нужно, а остальное продолжает вести клип — можно
+// взять готовую ходьбу и доработать поворот головы, не трогая ноги.
+//
+// Компонент инструмента, а не движка: это АВТОРСКИЕ данные, они живут в
+// .d3dproj рядом с кривыми. В сцену (.sage) они не уезжают — там персонаж
+// остаётся с обычными клипами.
+//
+// Значения здесь — состояние на ТЕКУЩЕМ кадре: их пишет AnimationDocument::Apply
+// из кривых костных дорожек, а гизмо правит напрямую (и дальше это состояние
+// снимается ключом). Ровно та же схема, что у Transform обычного объекта, —
+// сцена всегда хранит «как сейчас», документ хранит «как во времени».
+struct PoseComponent {
+    std::vector<sage::anim::JointPose> Joints;
+
+    // Гарантирует нужный размер, не теряя уже поставленного. Скелет становится
+    // известен только после загрузки модели, поэтому вектор растёт лениво.
+    sage::anim::JointPose& Ensure(int joint, int skeletonSize) {
+        if ((int)Joints.size() < skeletonSize) Joints.resize((size_t)skeletonSize);
+        return Joints[(size_t)joint];
+    }
+
+    const sage::anim::JointPose* Find(int joint) const {
+        if (joint < 0 || joint >= (int)Joints.size()) return nullptr;
+        return &Joints[(size_t)joint];
+    }
+
+    bool Any() const {
+        for (const sage::anim::JointPose& j : Joints) {
+            if (j.Any()) return true;
+        }
+        return false;
+    }
 };
 
 } // namespace d3d

@@ -104,6 +104,15 @@ jobs:
           ffprobe -v error -select_streams v:0 -show_entries stream=codec_name,nb_frames \
                   -of default=noprint_wrappers=1 smoke_render/smoke.mp4
 
+      # Ручная анимация костей: скелет приезжает вместе с моделью, а она требует
+      # графического контекста — headless-самотест сюда не достаёт.
+      - name: Headless bone animation check
+        working-directory: Director3D/build
+        run: |
+          D3D_WINDOW_WIDTH=640 D3D_WINDOW_HEIGHT=480 D3D_BONE_TEST=1 \
+            xvfb-run -a --server-args="-screen 0 640x480x24" ./Director3D | tee bones.txt
+          grep -q "Проверка костей ПРОЙДЕНА" bones.txt
+
       - name: Headless smoke test (PNG sequence)
         working-directory: Director3D/build
         run: |

@@ -94,6 +94,7 @@ void MenuBarPanel::Draw(DirectorHost& host) {
         ImGui::MenuItem("Safe Area", nullptr, &ov.SafeArea);
         ImGui::MenuItem("Rule of Thirds", nullptr, &ov.Thirds);
         ImGui::MenuItem("Selection Outline", nullptr, &ov.Outline);
+        ImGui::MenuItem("Skeleton", nullptr, &ov.Skeleton);
         ImGui::Separator();
         if (ImGui::MenuItem("Frame Selected", "F", false, hasSelection)) host.FocusOnSelected();
         ImGui::Separator();
@@ -129,6 +130,20 @@ void MenuBarPanel::Draw(DirectorHost& host) {
         ImGui::Separator();
         if (ImGui::MenuItem("Set Key", "K", false, hasSelection)) host.KeySelected();
         ImGui::MenuItem("Auto Key", "Ctrl+K", &host.AutoKey());
+        ImGui::Separator();
+
+        // --- Поза персонажа ---
+        const BoneSelection& bone = host.SelectedBone();
+        if (ImGui::MenuItem("Key Bone", "K", false, bone.Valid())) host.KeyBone();
+        if (ImGui::MenuItem("Key Whole Pose", nullptr, false, hasSelection)) {
+            host.KeyWholePose(host.SelectedId());
+        }
+        if (ImGui::MenuItem("Reset Pose", nullptr, false, hasSelection)) {
+            host.ResetPose(host.SelectedId());
+        }
+        if (ImGui::MenuItem("Deselect Bone", "Esc", false, bone.Valid())) {
+            host.SelectBone(bone.EntityId, -1);
+        }
         ImGui::Separator();
         if (ImGui::MenuItem("Add Marker", "M")) {
             Marker marker;

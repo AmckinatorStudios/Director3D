@@ -12,6 +12,7 @@
 #include "ImGuizmo.h"
 #include "imgui.h"
 
+#include "anim/BonePose.h"
 #include "anim/DirectorComponents.h"
 #include "sage/core/Application.h"
 #include "sage/scene/Components.h"
@@ -176,6 +177,9 @@ void StagePanel::HandleCamera(DirectorHost& host, bool hovered) {
 
 void StagePanel::DrawGizmo(DirectorHost& host, ImVec2 imagePos, ImVec2 imageSize) {
     if (host.GizmoOp() == 0) { m_gizmoWasUsing = false; return; } // режим «только выбор»
+    // Кость выбрана — манипулятор принадлежит ей. Два гизмо в кадре одновременно
+    // означали бы, что мышь тянет неизвестно что.
+    if (host.SelectedBone().Valid()) { m_gizmoWasUsing = false; return; }
 
     GameObject selected = host.SelectedObject();
     if (!selected.Valid()) { m_gizmoWasUsing = false; return; }
@@ -258,6 +262,178 @@ void StagePanel::DrawGizmo(DirectorHost& host, ImVec2 imagePos, ImVec2 imageSize
         host.NotifyObjectEdited(selected.Id());
     }
     m_gizmoWasUsing = usingNow;
+}
+
+// ============================================================================
+//  Скелет персонажа
+// ============================================================================
+
+// Скелет рисуется НЕ в 3D, а линиями поверх готовой картинки. Причины две:
+// кости должны быть видны сквозь меш (иначе в них не попасть мышью), и выбор
+// удобнее делать в экранных координатах — «ближайший сустав к курсору» ведёт
+// себя предсказуемо, а луч в 3D промахивается по тонким костям.
+bool StagePanel::DrawSkeletonOverlay(DirectorHost& host, ImVec2 imagePos, ImVec2 imageSize,
+                                     bool hovered) {
+    if (!host.Overlays().Skeleton) return false;
+
+    Scene& scene = host.CurrentScene();
+    // Скелет показываем у выбранного персонажа: рисовать все скелеты сцены —
+    // это каша из линий, в которой не видно того, что правишь.
+    int entityId = host.SelectedBone().Valid() ? host.SelectedBone().EntityId : host.SelectedId();
+    const sage::anim::Skeleton* skeleton = SkeletonOf(scene, entityId);
+    if (!skeleton) return false;
+
+    const glm::mat4 viewProj = host.ProjMatrix() * host.ViewMatrix();
+
+    // Проекция сустава в экран. w <= 0 — сустав за камерой, его не рисуем и по
+    // нему не кликаем: спроецированная точка в этом случае бессмысленна.
+    auto project = [&](const glm::vec3& world, ImVec2& out) {
+        const glm::vec4 clip = viewProj * glm::vec4(world, 1.0f);
+        if (clip.w <= 1e-5f) return false;
+        const glm::vec3 ndc = glm::vec3(clip) / clip.w;
+        out = ImVec2(imagePos.x + (ndc.x * 0.5f + 0.5f) * imageSize.x,
+                     imagePos.y + (0.5f - ndc.y * 0.5f) * imageSize.y);
+        return true;
+    };
+
+    const int count = skeleton->Count();
+    std::vector<ImVec2> screen((size_t)count);
+    std::vector<bool> visible((size_t)count, false);
+    for (int i = 0; i < count; ++i) {
+        glm::mat4 world;
+        if (!BoneWorldMatrix(scene, entityId, i, world)) continue;
+        visible[(size_t)i] = project(glm::vec3(world[3]), screen[(size_t)i]);
+    }
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->PushClipRect(imagePos, ImVec2(imagePos.x + imageSize.x, imagePos.y + imageSize.y), true);
+
+    const int selectedJoint = host.SelectedBone().EntityId == entityId ? host.SelectedBone().Joint : -1;
+    const AnimationDocument& doc = host.Document();
+
+    // --- Кости: линия от родителя к суставу ---
+    for (int i = 0; i < count; ++i) {
+        const int parent = skeleton->Joints[(size_t)i].Parent;
+        if (parent < 0 || !visible[(size_t)i] || !visible[(size_t)parent]) continue;
+        const bool onPath = i == selectedJoint || parent == selectedJoint;
+        dl->AddLine(screen[(size_t)parent], screen[(size_t)i],
+                    onPath ? IM_COL32(255, 190, 60, 230) : IM_COL32(210, 220, 235, 130),
+                    onPath ? 2.6f : 1.6f);
+    }
+
+    // --- Суставы: точка, по которой попадают мышью ---
+    int hoverJoint = -1;
+    float hoverDist = 12.0f; // радиус попадания в пикселях
+    const ImVec2 mouse = ImGui::GetMousePos();
+    for (int i = 0; i < count; ++i) {
+        if (!visible[(size_t)i]) continue;
+        const ImVec2 p = screen[(size_t)i];
+        const float dx = mouse.x - p.x, dy = mouse.y - p.y;
+        const float dist = std::sqrt(dx * dx + dy * dy);
+        if (hovered && dist < hoverDist) { hoverDist = dist; hoverJoint = i; }
+    }
+
+    for (int i = 0; i < count; ++i) {
+        if (!visible[(size_t)i]) continue;
+        const ImVec2 p = screen[(size_t)i];
+        const bool isSelected = i == selectedJoint;
+        const bool isHover = i == hoverJoint;
+        // Кость с дорожкой помечена отдельно: по вьюпорту сразу видно, что уже
+        // анимировано, а что ещё нет.
+        const bool animated = doc.FindTrack(entityId, Property::BoneRotation, i) ||
+                              doc.FindTrack(entityId, Property::BonePosition, i) ||
+                              doc.FindTrack(entityId, Property::BoneScale, i);
+
+        const float radius = isSelected ? 6.0f : (isHover ? 5.5f : 3.5f);
+        const ImU32 fill = isSelected  ? IM_COL32(255, 190, 60, 255)
+                           : isHover   ? IM_COL32(255, 255, 255, 235)
+                           : animated  ? IM_COL32(120, 200, 255, 220)
+                                       : IM_COL32(225, 232, 245, 170);
+        dl->AddCircleFilled(p, radius, fill);
+        dl->AddCircle(p, radius, IM_COL32(20, 24, 32, 200), 0, 1.5f);
+    }
+
+    // Имя кости под курсором — иначе в скелете из сотни костей не понять, где ты.
+    if (hoverJoint >= 0) {
+        const std::string& name = skeleton->Joints[(size_t)hoverJoint].Name;
+        if (!name.empty()) {
+            const ImVec2 p = screen[(size_t)hoverJoint];
+            const ImVec2 textPos(p.x + 10.0f, p.y - 8.0f);
+            const ImVec2 size = ImGui::CalcTextSize(name.c_str());
+            dl->AddRectFilled(ImVec2(textPos.x - 4.0f, textPos.y - 2.0f),
+                              ImVec2(textPos.x + size.x + 4.0f, textPos.y + size.y + 2.0f),
+                              IM_COL32(16, 18, 24, 220), 3.0f);
+            dl->AddText(textPos, IM_COL32(255, 255, 255, 240), name.c_str());
+        }
+    }
+
+    dl->PopClipRect();
+
+    // --- Выбор кости кликом ---
+    if (hoverJoint >= 0 && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !ImGuizmo::IsUsing()) {
+        host.SelectBone(entityId, hoverJoint);
+        return true; // клик израсходован: обычный выбор объекта его не увидит
+    }
+    // Клик мимо кости по персонажу со скелетом снимает выбор кости, но НЕ
+    // персонажа: иначе выйти из режима правки скелета было бы нечем.
+    if (selectedJoint >= 0 && hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
+        !ImGuizmo::IsOver() && !ImGuizmo::IsUsing()) {
+        host.SelectBone(entityId, -1);
+        return true;
+    }
+    return false;
+}
+
+void StagePanel::DrawBoneGizmo(DirectorHost& host, ImVec2 imagePos, ImVec2 imageSize) {
+    const BoneSelection& bone = host.SelectedBone();
+    if (!bone.Valid() || host.GizmoOp() == 0) { m_boneGizmoWasUsing = false; return; }
+
+    Scene& scene = host.CurrentScene();
+    glm::mat4 world;
+    if (!BoneWorldMatrix(scene, bone.EntityId, bone.Joint, world)) {
+        m_boneGizmoWasUsing = false;
+        return;
+    }
+
+    ImGuizmo::SetOrthographic(host.Preset() != ViewPreset::Perspective &&
+                              host.Preset() != ViewPreset::SceneCamera);
+    ImGuizmo::SetDrawlist();
+    ImGuizmo::SetRect(imagePos.x, imagePos.y, imageSize.x, imageSize.y);
+
+    const auto op = (ImGuizmo::OPERATION)host.GizmoOp();
+    float snapValues[3];
+    const float snapUnit = (op == ImGuizmo::ROTATE) ? 15.0f : (op == ImGuizmo::SCALE ? 0.1f : 0.05f);
+    snapValues[0] = snapValues[1] = snapValues[2] = snapUnit;
+
+    // Кость почти всегда крутят в СВОИХ осях: «согнуть локоть» — это поворот
+    // вокруг оси сустава, а не вокруг оси мира.
+    const auto mode = (host.GizmoSpaceRef() == GizmoSpace::World && op == ImGuizmo::TRANSLATE)
+                          ? ImGuizmo::WORLD : ImGuizmo::LOCAL;
+
+    if (!ImGuizmo::IsUsing() && ImGuizmo::IsOver()) host.CaptureUndo();
+    const bool usingNow = ImGuizmo::IsUsing();
+    if (usingNow && !m_boneGizmoWasUsing) host.CommitUndo();
+
+    if (ImGuizmo::Manipulate(glm::value_ptr(host.ViewMatrix()), glm::value_ptr(host.ProjMatrix()),
+                             op, mode, glm::value_ptr(world), nullptr,
+                             host.GizmoSnap() ? snapValues : nullptr)) {
+        glm::vec3 t, s;
+        glm::quat r;
+        if (BoneLocalFromWorld(scene, bone.EntityId, bone.Joint, world, t, r, s)) {
+            // Пишем ВСЕ три канала, а не только тот, которым тянули: разложение
+            // матрицы всё равно даёт все три, и записать часть означало бы
+            // оставить кость в позе, которой на экране не было.
+            const glm::vec3 euler = EulerDegreesFromQuat(r);
+            const float tv[3] = {t.x, t.y, t.z};
+            const float rv[3] = {euler.x, euler.y, euler.z};
+            const float sv[3] = {s.x, s.y, s.z};
+            WriteBoneChannel(scene, bone.EntityId, bone.Joint, BoneChannel::Translation, tv);
+            WriteBoneChannel(scene, bone.EntityId, bone.Joint, BoneChannel::Rotation, rv);
+            WriteBoneChannel(scene, bone.EntityId, bone.Joint, BoneChannel::Scale, sv);
+            host.NotifyObjectEdited(bone.EntityId);
+        }
+    }
+    m_boneGizmoWasUsing = usingNow;
 }
 
 // ============================================================================
@@ -359,10 +535,14 @@ void StagePanel::DrawViewport(DirectorHost& host) {
 
     HandleCamera(host, hovered);
     DrawGizmo(host, imagePos, avail);
+    DrawBoneGizmo(host, imagePos, avail);
+    // Скелет рисуется ПОСЛЕ гизмо, чтобы линии костей не лезли поверх осей
+    // манипулятора, и до обычного выбора — клик по кости имеет приоритет.
+    const bool boneTookClick = DrawSkeletonOverlay(host, imagePos, avail, hovered);
     DrawFramingGuides(host, imagePos, avail);
 
     // --- Выбор кликом (не по гизмо и не во время манипуляции) ---
-    if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
+    if (!boneTookClick && hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
         !ImGuizmo::IsOver() && !ImGuizmo::IsUsing()) {
         const ImVec2 mouse = ImGui::GetMousePos();
         const float u = (mouse.x - imagePos.x) / avail.x;

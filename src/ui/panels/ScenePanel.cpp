@@ -6,6 +6,7 @@
 #include "imgui.h"
 #include "imgui_stdlib.h"
 
+#include "anim/BonePose.h"
 #include "anim/DirectorComponents.h"
 #include "sage/scene/Components.h"
 #include "ui/DirectorHost.h"
@@ -92,6 +93,107 @@ bool ScenePanel::MatchesFilter(Scene& scene, entt::entity e) const {
 //  Отрисовка
 // ============================================================================
 
+// Ветка костей персонажа. Кости — не сущности сцены: в ECS их нет, они живут
+// внутри модели. Поэтому дерево строится прямо по скелету, а выбор кости идёт
+// мимо обычного выбора объекта (см. BoneSelection).
+void ScenePanel::DrawJoint(DirectorHost& host, Scene& scene, int entityId,
+                           const sage::anim::Skeleton& skeleton, int joint,
+                           const std::vector<std::vector<int>>& children) {
+    const std::vector<int>& kids = children[(size_t)joint];
+    const std::string& name = skeleton.Joints[(size_t)joint].Name;
+
+    ImGui::PushID(joint);
+    ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth;
+    if (kids.empty()) flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
+    if (host.SelectedBone().Is(entityId, joint)) flags |= ImGuiTreeNodeFlags_Selected;
+    if (!m_boneFilter.empty() && !kids.empty()) ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+
+    // Кость с дорожкой подсвечена: по дереву сразу видно, что уже анимировано.
+    const AnimationDocument& doc = host.Document();
+    const bool animated = doc.FindTrack(entityId, Property::BoneRotation, joint) ||
+                          doc.FindTrack(entityId, Property::BonePosition, joint) ||
+                          doc.FindTrack(entityId, Property::BoneScale, joint);
+    if (animated) ImGui::PushStyleColor(ImGuiCol_Text, Theme::Colors::Accent);
+
+    const bool open = ImGui::TreeNodeEx("##joint", flags, "%s",
+                                        name.empty() ? "(без имени)" : name.c_str());
+    if (animated) ImGui::PopStyleColor();
+
+    if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) host.SelectBone(entityId, joint);
+
+    if (ImGui::BeginPopupContextItem("##bonectx")) {
+        host.SelectBone(entityId, joint);
+        if (ImGui::MenuItem("Поставить ключ на кость", "K")) host.KeyBone();
+        if (ImGui::MenuItem("Заключить всю позу")) host.KeyWholePose(entityId);
+        ImGui::Separator();
+        if (ImGui::MenuItem("Снять выбор кости")) host.SelectBone(entityId, -1);
+        ImGui::EndPopup();
+    }
+
+    if (open && !kids.empty()) {
+        for (int child : kids) DrawJoint(host, scene, entityId, skeleton, child, children);
+        ImGui::TreePop();
+    }
+    ImGui::PopID();
+}
+
+void ScenePanel::DrawSkeletonTree(DirectorHost& host, Scene& scene, int entityId) {
+    const sage::anim::Skeleton* skeleton = SkeletonOf(scene, entityId);
+    if (!skeleton) {
+        // Модель грузится лениво — это нормальное состояние в первые кадры, и
+        // молчать о нём хуже, чем показать строку «скелет ещё не готов».
+        ImGui::TreeNodeEx("##nosk", ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen,
+                          "Skeleton (загружается…)");
+        return;
+    }
+
+    ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth;
+    if (host.SelectedBone().EntityId == entityId) flags |= ImGuiTreeNodeFlags_DefaultOpen;
+    if (!ImGui::TreeNodeEx("##skeleton", flags, "Skeleton (%d)", skeleton->Count())) return;
+
+    // Список детей каждой кости — строим один раз на кадр: рекурсия по
+    // «найти всех, у кого Parent == i» стоила бы O(n²) на каждом узле.
+    const int count = skeleton->Count();
+    std::vector<std::vector<int>> children((size_t)count);
+    std::vector<int> roots;
+    for (int i = 0; i < count; ++i) {
+        const int parent = skeleton->Joints[(size_t)i].Parent;
+        // Родитель вне диапазона или указывающий вперёд по циклу — битый файл;
+        // такую кость показываем как корневую, иначе она пропала бы из дерева.
+        if (parent >= 0 && parent < count && parent != i) children[(size_t)parent].push_back(i);
+        else roots.push_back(i);
+    }
+
+    if (count > 12) {
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::InputTextWithHint("##bonesearch", "Поиск кости...", &m_boneFilter);
+    }
+
+    if (m_boneFilter.empty()) {
+        for (int root : roots) DrawJoint(host, scene, entityId, *skeleton, root, children);
+    } else {
+        // При поиске иерархия не нужна — нужен список совпавших костей.
+        std::string needle = m_boneFilter;
+        std::transform(needle.begin(), needle.end(), needle.begin(), ::tolower);
+        int shown = 0;
+        for (int i = 0; i < count; ++i) {
+            std::string name = skeleton->Joints[(size_t)i].Name;
+            std::transform(name.begin(), name.end(), name.begin(), ::tolower);
+            if (name.find(needle) == std::string::npos) continue;
+            ImGui::PushID(i);
+            const bool selected = host.SelectedBone().Is(entityId, i);
+            if (ImGui::Selectable(skeleton->Joints[(size_t)i].Name.c_str(), selected)) {
+                host.SelectBone(entityId, i);
+            }
+            ImGui::PopID();
+            ++shown;
+        }
+        if (shown == 0) ImGui::TextDisabled("Костей с таким именем нет");
+    }
+
+    ImGui::TreePop();
+}
+
 void ScenePanel::DrawEntity(DirectorHost& host, Scene& scene, entt::entity e, bool insideCategory) {
     auto& reg = scene.Registry();
     if (!reg.valid(e) || !reg.all_of<IdComponent>(e)) return;
@@ -100,7 +202,9 @@ void ScenePanel::DrawEntity(DirectorHost& host, Scene& scene, entt::entity e, bo
     const int id = reg.get<IdComponent>(e).Id;
     const std::string& name = reg.get<NameComponent>(e).Name;
     const HierarchyComponent* h = reg.try_get<HierarchyComponent>(e);
-    const bool hasChildren = h && !h->Children.empty();
+    // Персонаж раскрывается даже без дочерних объектов: внутри у него скелет.
+    const bool hasSkeleton = reg.all_of<AnimatedModelComponent>(e);
+    const bool hasChildren = (h && !h->Children.empty()) || hasSkeleton;
 
     ImGui::PushID(id);
     ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth |
@@ -110,6 +214,9 @@ void ScenePanel::DrawEntity(DirectorHost& host, Scene& scene, entt::entity e, bo
     // При активном поиске ветки раскрыты: иначе найденный объект остаётся
     // спрятанным внутри свёрнутого родителя.
     if (!m_filter.empty() && hasChildren) ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+    // Выбрали кость (например, кликом во вьюпорте) — раскрываем персонажа, иначе
+    // непонятно, какая кость выбрана: дерево показывает свёрнутую строку.
+    if (host.SelectedBone().EntityId == id) ImGui::SetNextItemOpen(true, ImGuiCond_Always);
 
     // Иконка рисуется поверх строки узла: у ImGui нет штатной «иконки в
     // TreeNode», а отступ под неё даём пробелами в подписи.
@@ -156,6 +263,10 @@ void ScenePanel::DrawEntity(DirectorHost& host, Scene& scene, entt::entity e, bo
         if (ImGui::MenuItem("Открепить от родителя")) host.SetParentOf(id, -1);
         ImGui::Separator();
         if (ImGui::MenuItem("Поставить ключ", "K")) host.KeySelected();
+        if (reg.all_of<AnimatedModelComponent>(e)) {
+            if (ImGui::MenuItem("Заключить всю позу")) host.KeyWholePose(id);
+            if (ImGui::MenuItem("Снять ручную позу")) host.ResetPose(id);
+        }
         if (reg.all_of<CameraComponent>(e)) {
             if (ImGui::MenuItem("Сделать активной камерой", nullptr, host.ActiveCameraId() == id)) {
                 host.SetActiveCameraId(id);
@@ -189,7 +300,10 @@ void ScenePanel::DrawEntity(DirectorHost& host, Scene& scene, entt::entity e, bo
     }
 
     if (open && hasChildren) {
-        for (entt::entity child : h->Children) DrawEntity(host, scene, child, insideCategory);
+        if (hasSkeleton) DrawSkeletonTree(host, scene, id);
+        if (h) {
+            for (entt::entity child : h->Children) DrawEntity(host, scene, child, insideCategory);
+        }
         ImGui::TreePop();
     }
     ImGui::PopID();

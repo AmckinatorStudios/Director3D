@@ -39,7 +39,20 @@ enum class Property {
     PostMotionBlur,     // CineCamera.MotionBlurAmount
     PostChromatic,      // CineCamera.ChromaticAmount
     Visibility,         // StageItem.Visible (0/1, ступенчато)
+
+    // --- Кости персонажа ---
+    // Привязываются к паре «сущность + индекс кости» (Track::Joint), поэтому у
+    // одной сущности этих дорожек столько, сколько костей анимирует аниматор.
+    // Значения — ЛОКАЛЬНЫЕ, относительно родительской кости: так же, как их
+    // хранит клип, и поэтому ручная поза и клип складываются без пересчётов.
+    BonePosition,       // локальный перенос кости      (X/Y/Z)
+    BoneRotation,       // локальный поворот, градусы   (X/Y/Z)
+    BoneScale,          // локальный масштаб кости      (X/Y/Z)
 };
+
+// Свойство относится к кости, а не к самой сущности? У таких дорожек значим
+// Track::Joint, и в интерфейсе они живут под скелетом, а не под объектом.
+bool IsBoneProperty(Property prop);
 
 // Описание свойства: имя для UI, число каналов, подписи каналов, цвета каналов
 // в редакторе кривых, режим интерполяции по умолчанию.
@@ -64,14 +77,14 @@ bool PropertyFromKey(const std::string& key, Property& out);
 // Есть ли у сущности то, что нужно этому свойству (свет — у сущности со светом,
 // FOV — у камеры). Меню «Добавить дорожку» показывает только применимое, а
 // загрузка проекта отсекает дорожки, повисшие после удаления компонента.
-bool PropertyApplies(Scene& scene, int entityId, Property prop);
+bool PropertyApplies(Scene& scene, int entityId, Property prop, int joint = -1);
 
 // Читает текущее значение свойства сущности в values (Channels чисел).
 // false — сущности нет или свойство к ней неприменимо (values не трогается).
-bool ReadProperty(Scene& scene, int entityId, Property prop, float* values);
+bool ReadProperty(Scene& scene, int entityId, Property prop, float* values, int joint = -1);
 
 // Пишет значение свойства в сущность. false — записать некуда.
-bool WriteProperty(Scene& scene, int entityId, Property prop, const float* values);
+bool WriteProperty(Scene& scene, int entityId, Property prop, const float* values, int joint = -1);
 
 // Список свойств, применимых к сущности прямо сейчас (для меню и авто-ключа).
 std::vector<Property> ApplicableProperties(Scene& scene, int entityId);

@@ -21,6 +21,22 @@ enum class CreateKind { Camera, PointLight, SpotLight, Cube, Sphere, Plane, Cyli
 // Пространство манипулятора: оси объекта или оси мира.
 enum class GizmoSpace { Local, World };
 
+// Выбранная кость персонажа.
+//
+// Кость выбирается ОТДЕЛЬНО от объекта и живёт рядом с ним, а не вместо: сам
+// персонаж остаётся выбранным (инспектор показывает его трансформ, дерево
+// подсвечивает строку), а кость — это выбор внутри него. Так же устроены все
+// программы анимации: выйти из режима правки скелета не значит потерять
+// персонажа.
+struct BoneSelection {
+    int EntityId = -1; // сущность с анимированной моделью
+    int Joint = -1;    // индекс кости в её скелете
+
+    bool Valid() const { return EntityId >= 0 && Joint >= 0; }
+    bool Is(int entityId, int joint) const { return EntityId == entityId && Joint == joint; }
+    void Clear() { EntityId = -1; Joint = -1; }
+};
+
 // Модальные окна, которые умеет показывать DialogsPanel.
 enum class Dialog { None, NewProject, OpenProject, SaveProjectAs, ImportAsset, ExportScene,
                     RenderSettings, TimelineSettings, About, Shortcuts };
@@ -52,6 +68,19 @@ public:
     virtual bool IsSelected(int id) const = 0;
     virtual void ToggleSelection(int id) = 0; // Ctrl-клик
     virtual void ClearSelection() = 0;
+
+    // --- Кости персонажа ---------------------------------------------------
+    // Выбранная кость (см. BoneSelection). Пустая — работаем с объектом целиком.
+    virtual const BoneSelection& SelectedBone() const = 0;
+    // Выбрать кость. joint < 0 — снять выбор кости, оставив объект выбранным.
+    virtual void SelectBone(int entityId, int joint) = 0;
+    // Ставит ключи на всю позу выбранной кости (перенос+поворот+масштаб).
+    // Возвращает число затронутых дорожек; 0 — кости нет или скелет не готов.
+    virtual int KeyBone() = 0;
+    // Ставит ключи на всю тронутую позу персонажа целиком.
+    virtual int KeyWholePose(int entityId) = 0;
+    // Снимает ручную позу персонажа — он возвращается к чистому клипу.
+    virtual void ResetPose(int entityId) = 0;
 
     // --- Анимация ----------------------------------------------------------
     virtual AnimationDocument& Document() = 0;

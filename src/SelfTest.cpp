@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "anim/AnimationDocument.h"
+#include "anim/BonePose.h"
 #include "anim/DirectorComponents.h"
 #include "anim/Playback.h"
 #include "project/Project.h"
@@ -16,6 +17,7 @@
 #include "render/VideoWriter.h"
 #include "sage/scene/Components.h"
 #include "sage/scene/Scene.h"
+#include "sage/scene/Transform.h"
 
 namespace fs = std::filesystem;
 
@@ -560,6 +562,151 @@ void TestVideoCommand() {
           "без звука подрезка не добавляется");
 }
 
+// ---------------------------------------------------------------------------
+// Кости. Сам расчёт позы проверен тестами движка на настоящем скелете — там он
+// и живёт. Здесь проверяется то, что принадлежит инструменту и работает БЕЗ
+// OpenGL: пересчёт углов, различение дорожек по кости, устойчивость к
+// отсутствию скелета (модель грузится лениво — этот случай реален) и файл
+// проекта.
+// ---------------------------------------------------------------------------
+void TestBoneTracks() {
+    std::printf("\n[Кости персонажа]\n");
+
+    // --- Углы Эйлера ---
+    // Порядок вращений обязан совпадать с движковым Transform, иначе «повернуть
+    // кость на 30°» и «повернуть объект на 30°» дали бы разный результат.
+    const glm::vec3 angles(30.0f, -45.0f, 15.0f);
+    const glm::quat q = QuatFromEulerDegrees(angles);
+    const glm::vec3 back = EulerDegreesFromQuat(q);
+    CheckNear(back.x, angles.x, 1e-2f, "угол X переживает круг преобразований");
+    CheckNear(back.y, angles.y, 1e-2f, "угол Y переживает круг преобразований");
+    CheckNear(back.z, angles.z, 1e-2f, "угол Z переживает круг преобразований");
+
+    Transform tr;
+    tr.Rotation = angles;
+    const glm::mat4 fromTransform = tr.GetMatrix();
+    const glm::mat4 fromQuat = glm::mat4_cast(q);
+    float worst = 0.0f;
+    for (int c = 0; c < 3; ++c) {
+        for (int r = 0; r < 3; ++r) {
+            worst = std::max(worst, std::fabs(fromTransform[c][r] - fromQuat[c][r]));
+        }
+    }
+    Check(worst < 1e-4f, "поворот кости считается той же конвенцией, что и Transform движка");
+
+    const glm::vec3 zero = EulerDegreesFromQuat(glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
+    Check(std::fabs(zero.x) + std::fabs(zero.y) + std::fabs(zero.z) < 1e-4f,
+          "единичный кватернион даёт нулевые углы");
+
+    // --- Дорожки различаются по кости ---
+    AnimationDocument doc;
+    const int hipId = doc.EnsureTrack(7, Property::BoneRotation, 3).Id;
+    const int kneeId = doc.EnsureTrack(7, Property::BoneRotation, 9).Id;
+    Check(hipId != kneeId, "две кости одной сущности — две разные дорожки");
+    Check(doc.Tracks.size() == 2, "повторных дорожек не создалось");
+    Check(doc.EnsureTrack(7, Property::BoneRotation, 3).Id == hipId,
+          "та же кость возвращает ту же дорожку");
+    Check(doc.FindTrack(7, Property::BoneRotation, 9) != nullptr, "дорожка ищется по кости");
+    Check(doc.FindTrack(7, Property::BoneRotation, 5) == nullptr, "у нетронутой кости дорожки нет");
+    Check(doc.BoneTracksOf(7).size() == 2, "костные дорожки сущности перечисляются");
+    Check(doc.HasBoneTracks(7), "сущность помечена как анимируемая покостно");
+    Check(!doc.HasBoneTracks(8), "у чужой сущности костных дорожек нет");
+
+    // Обычное свойство не должно смешиваться с костным: у него кости не бывает.
+    const int posId = doc.EnsureTrack(7, Property::Position, 3).Id;
+    Check(doc.TrackById(posId)->Joint == -1, "у свойства объекта кость сбрасывается в -1");
+    Check(doc.EnsureTrack(7, Property::Position).Id == posId,
+          "свойство объекта не двоится из-за кости");
+
+    Check(IsBoneProperty(Property::BoneRotation), "костное свойство распознаётся");
+    Check(!IsBoneProperty(Property::Rotation), "поворот объекта — не костное свойство");
+
+    // --- Без скелета ничего не падает и не выдумывается ---
+    int cubeId = 0, cameraId = 0, lightId = 0;
+    std::unique_ptr<Scene> scene = MakeHeadlessScene(cubeId, cameraId, lightId);
+    Check(SkeletonOf(*scene, cubeId) == nullptr, "у обычного объекта скелета нет");
+    float values[3] = {1.0f, 2.0f, 3.0f};
+    Check(!ReadProperty(*scene, cubeId, Property::BoneRotation, values, 0),
+          "кость несуществующего скелета не читается");
+    Check(!WriteProperty(*scene, cubeId, Property::BoneRotation, values, 0),
+          "кость несуществующего скелета не пишется");
+    Check(doc.KeyBone(*scene, cubeId, 0, 0.0f) == 0, "ключ на кость без скелета не ставится");
+    Check(doc.KeyPose(*scene, cubeId, 0.0f) == 0, "поза без скелета не ключится");
+    Check(!PropertyApplies(*scene, cubeId, Property::BoneRotation, 0),
+          "костное свойство неприменимо к объекту без скелета");
+
+    // Костные свойства не показываются в меню свойств объекта: у них своё меню,
+    // где заодно выбирается кость.
+    bool anyBone = false;
+    for (Property p : ApplicableProperties(*scene, cubeId)) {
+        if (IsBoneProperty(p)) anyBone = true;
+    }
+    Check(!anyBone, "костных свойств нет в списке свойств объекта");
+
+    // Дорожка ждёт скелета, пока модель грузится, и не ждёт удалённой сущности.
+    AnimationDocument pending;
+    pending.EnsureTrack(cubeId, Property::BoneRotation, 2).JointName = "spine";
+    Check(pending.RebindBoneTracks(*scene) == 1, "дорожка живой сущности ждёт скелета");
+    AnimationDocument orphan;
+    orphan.EnsureTrack(9999, Property::BoneRotation, 2).JointName = "spine";
+    Check(orphan.RebindBoneTracks(*scene) == 0, "дорожка удалённой сущности ничего не ждёт");
+
+    // --- Файл проекта ---
+    AnimationDocument saved;
+    Track& t = saved.EnsureTrack(cubeId, Property::BoneRotation, 4);
+    t.JointName = "Bone_Spine";
+    t.Channels[0].SetKey(0.0f, 0.0f);
+    t.Channels[0].SetKey(1.0f, 45.0f);
+
+    // Ручная поза кости — тоже часть проекта.
+    PoseComponent pose;
+    pose.Joints.resize(5);
+    pose.Joints[4].HasRotation = true;
+    pose.Joints[4].Rotation = QuatFromEulerDegrees({10.0f, 20.0f, 30.0f});
+    pose.Joints[4].HasTranslation = true;
+    pose.Joints[4].Translation = {0.5f, 1.5f, -2.5f};
+    scene->Registry().emplace<PoseComponent>(scene->Get(cubeId).Entity(), pose);
+
+    const std::string path = "/tmp/director3d_bones.d3dproj";
+    std::string err;
+    Check(ProjectFile::Save(path, *scene, saved, 0.0f, err), "проект с костями сохранён");
+
+    std::unique_ptr<Scene> loadedScene;
+    AnimationDocument loaded;
+    float playhead = 0.0f;
+    Check(ProjectFile::Load(path, loadedScene, loaded, playhead, err), "проект с костями загружен");
+
+    const Track* rt = loaded.FindTrack(cubeId, Property::BoneRotation, 4);
+    Check(rt != nullptr, "костная дорожка нашлась после загрузки");
+    if (rt) {
+        Check(rt->JointName == "Bone_Spine", "имя кости сохранилось");
+        Check(rt->Joint == 4, "индекс кости сохранился");
+        CheckNear(rt->Channels[0].Evaluate(1.0f), 45.0f, 1e-3f, "ключи костной дорожки на месте");
+    }
+
+    if (loadedScene) {
+        const PoseComponent* rp =
+            loadedScene->Registry().try_get<PoseComponent>(loadedScene->Get(cubeId).Entity());
+        Check(rp != nullptr, "ручная поза сохранилась в проекте");
+        if (rp && rp->Joints.size() > 4) {
+            const sage::anim::JointPose& jp = rp->Joints[4];
+            Check(jp.HasRotation && jp.HasTranslation, "переопределённые каналы кости восстановлены");
+            Check(!jp.HasScale, "нетронутый канал не выдумывается при загрузке");
+            CheckNear(jp.Translation.y, 1.5f, 1e-4f, "перенос кости восстановлен");
+            const glm::vec3 deg = EulerDegreesFromQuat(jp.Rotation);
+            CheckNear(deg.y, 20.0f, 1e-2f, "поворот кости восстановлен");
+            // Кости 0..3 не трогали — они не должны стать «переопределёнными».
+            bool untouchedClean = true;
+            for (size_t i = 0; i < 4 && i < rp->Joints.size(); ++i) {
+                if (rp->Joints[i].Any()) untouchedClean = false;
+            }
+            Check(untouchedClean, "нетронутые кости не попали в файл как переопределённые");
+        }
+    }
+    std::error_code ec;
+    fs::remove(path, ec);
+}
+
 } // namespace
 
 int RunSelfTest() {
@@ -573,6 +720,7 @@ int RunSelfTest() {
     TestProjectIO();
     TestAudioDecoding();
     TestVideoCommand();
+    TestBoneTracks();
 
     std::printf("\n=====================================\n");
     std::printf("Пройдено: %d, провалено: %d\n", g_passed, g_failed);

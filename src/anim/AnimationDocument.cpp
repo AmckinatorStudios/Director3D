@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "anim/BonePose.h"
 #include "anim/DirectorComponents.h"
 #include "sage/scene/Components.h"
 #include "sage/scene/Scene.h"
@@ -13,15 +14,17 @@ namespace d3d {
 //  Дорожки свойств
 // ============================================================================
 
-Track* AnimationDocument::FindTrack(int targetId, Property prop) {
+Track* AnimationDocument::FindTrack(int targetId, Property prop, int joint) {
     for (Track& t : Tracks) {
-        if (t.TargetId == targetId && t.Prop == prop) return &t;
+        // Кость различает дорожки только у костных свойств: у обычных Joint
+        // всегда -1, и сравнение с ним ничего не меняет.
+        if (t.TargetId == targetId && t.Prop == prop && t.Joint == joint) return &t;
     }
     return nullptr;
 }
 
-const Track* AnimationDocument::FindTrack(int targetId, Property prop) const {
-    return const_cast<AnimationDocument*>(this)->FindTrack(targetId, prop);
+const Track* AnimationDocument::FindTrack(int targetId, Property prop, int joint) const {
+    return const_cast<AnimationDocument*>(this)->FindTrack(targetId, prop, joint);
 }
 
 Track* AnimationDocument::TrackById(int id) {
@@ -31,15 +34,68 @@ Track* AnimationDocument::TrackById(int id) {
     return nullptr;
 }
 
-Track& AnimationDocument::EnsureTrack(int targetId, Property prop) {
-    if (Track* existing = FindTrack(targetId, prop)) return *existing;
+Track& AnimationDocument::EnsureTrack(int targetId, Property prop, int joint) {
+    if (!IsBoneProperty(prop)) joint = -1; // у обычных свойств кости не бывает
+    if (Track* existing = FindTrack(targetId, prop, joint)) return *existing;
     Track t;
     t.Id = TakeId();
     t.TargetId = targetId;
     t.Prop = prop;
+    t.Joint = joint;
     t.Channels.resize((size_t)PropertyInfoOf(prop).Channels);
     Tracks.push_back(std::move(t));
     return Tracks.back();
+}
+
+int AnimationDocument::RebindBoneTracks(Scene& scene) {
+    int pending = 0;
+    for (Track& t : Tracks) {
+        if (!IsBoneProperty(t.Prop)) continue;
+
+        const sage::anim::Skeleton* sk = SkeletonOf(scene, t.TargetId);
+        if (!sk) {
+            // Сущности может уже не быть — тогда ждать нечего, дорожка просто
+            // не применится. Ждём только там, где персонаж есть, а модель ещё грузится.
+            if (scene.Get(t.TargetId).Valid()) ++pending;
+            continue;
+        }
+
+        if (!t.JointName.empty()) {
+            const int byName = FindJoint(*sk, t.JointName);
+            if (byName >= 0) {
+                t.Joint = byName;
+                continue;
+            }
+            // Кость переименовали: держимся сохранённого индекса, если он ещё в
+            // пределах скелета, и запоминаем новое имя — иначе дорожка каждый
+            // раз искала бы призрака.
+            if (t.Joint >= 0 && t.Joint < sk->Count()) {
+                t.JointName = sk->Joints[(size_t)t.Joint].Name;
+                continue;
+            }
+            t.Joint = -1; // такой кости больше нет — дорожка молча не применяется
+            continue;
+        }
+
+        // Имени нет (проект от версии без него) — восстанавливаем его по индексу.
+        if (t.Joint >= 0 && t.Joint < sk->Count()) t.JointName = sk->Joints[(size_t)t.Joint].Name;
+    }
+    return pending;
+}
+
+std::vector<const Track*> AnimationDocument::BoneTracksOf(int targetId) const {
+    std::vector<const Track*> out;
+    for (const Track& t : Tracks) {
+        if (t.TargetId == targetId && IsBoneProperty(t.Prop)) out.push_back(&t);
+    }
+    return out;
+}
+
+bool AnimationDocument::HasBoneTracks(int targetId) const {
+    for (const Track& t : Tracks) {
+        if (t.TargetId == targetId && IsBoneProperty(t.Prop)) return true;
+    }
+    return false;
 }
 
 void AnimationDocument::RemoveTrack(int id) {
@@ -87,12 +143,16 @@ void AnimationDocument::RemoveClipTrack(int id) {
 //  Ключи
 // ============================================================================
 
-bool AnimationDocument::KeyFromScene(Scene& scene, int targetId, Property prop, float time) {
+bool AnimationDocument::KeyFromScene(Scene& scene, int targetId, Property prop, float time,
+                                     int joint) {
     float values[3] = {0.0f, 0.0f, 0.0f};
-    if (!ReadProperty(scene, targetId, prop, values)) return false;
+    if (!ReadProperty(scene, targetId, prop, values, joint)) return false;
 
     const PropertyInfo& info = PropertyInfoOf(prop);
-    Track& track = EnsureTrack(targetId, prop);
+    Track& track = EnsureTrack(targetId, prop, joint);
+    if (IsBoneProperty(prop) && track.JointName.empty()) {
+        track.JointName = JointName(scene, targetId, joint);
+    }
     const Interp mode = info.Stepped ? Interp::Constant : Interp::Smooth;
     for (int c = 0; c < info.Channels && c < track.ChannelCount(); ++c) {
         track.Channels[(size_t)c].SetKey(time, values[c], mode);
@@ -105,13 +165,54 @@ int AnimationDocument::KeyExistingTracks(Scene& scene, int targetId, float time)
     for (Track& track : Tracks) {
         if (track.TargetId != targetId || track.Locked) continue;
         float values[3] = {0.0f, 0.0f, 0.0f};
-        if (!ReadProperty(scene, targetId, track.Prop, values)) continue;
+        if (!ReadProperty(scene, targetId, track.Prop, values, track.Joint)) continue;
         const PropertyInfo& info = PropertyInfoOf(track.Prop);
         const Interp mode = info.Stepped ? Interp::Constant : Interp::Smooth;
         for (int c = 0; c < info.Channels && c < track.ChannelCount(); ++c) {
             track.Channels[(size_t)c].SetKey(time, values[c], mode);
         }
         ++keyed;
+    }
+    return keyed;
+}
+
+int AnimationDocument::KeyBone(Scene& scene, int targetId, int joint, float time) {
+    // Поза кости — это все три канала сразу. Ключить их порознь можно (дорожки
+    // независимы), но кнопка «заключить» ставит позу целиком: так аниматор не
+    // получает через десять кадров сюрприз в виде забытого масштаба.
+    int keyed = 0;
+    const Property props[] = {Property::BonePosition, Property::BoneRotation, Property::BoneScale};
+    for (Property prop : props) {
+        if (KeyFromScene(scene, targetId, prop, time, joint)) ++keyed;
+    }
+    return keyed;
+}
+
+int AnimationDocument::KeyPose(Scene& scene, int targetId, float time) {
+    const sage::anim::Skeleton* sk = SkeletonOf(scene, targetId);
+    if (!sk) return 0;
+
+    // Кости, которые уже ведёт документ, — их ключим в любом случае, иначе
+    // дорожка «застынет» на прошлом ключе, пока остальные едут.
+    std::vector<bool> wanted((size_t)sk->Count(), false);
+    for (const Track& t : Tracks) {
+        if (t.TargetId != targetId || !IsBoneProperty(t.Prop)) continue;
+        if (t.Joint >= 0 && t.Joint < sk->Count()) wanted[(size_t)t.Joint] = true;
+    }
+    // Плюс кости, которые аниматор трогал руками в этом кадре.
+    GameObject obj = scene.Get(targetId);
+    if (obj.Valid()) {
+        if (const PoseComponent* pose = scene.Registry().try_get<PoseComponent>(obj.Entity())) {
+            const int count = std::min((int)pose->Joints.size(), sk->Count());
+            for (int i = 0; i < count; ++i) {
+                if (pose->Joints[(size_t)i].Any()) wanted[(size_t)i] = true;
+            }
+        }
+    }
+
+    int keyed = 0;
+    for (int i = 0; i < sk->Count(); ++i) {
+        if (wanted[(size_t)i]) keyed += KeyBone(scene, targetId, i, time);
     }
     return keyed;
 }
@@ -190,30 +291,13 @@ const ClipBlock* ActiveBlock(const ClipTrack& track, float time) {
 } // namespace
 
 void AnimationDocument::Apply(Scene& scene, float time, bool seeking) const {
-    // --- Дорожки свойств: сэмплируем кривые и пишем в компоненты ---
-    for (const Track& track : Tracks) {
-        if (track.Muted || track.Channels.empty()) continue;
-
-        // Полностью пустая дорожка не должна перетирать сцену нулями: пока в ней
-        // нет ни одного ключа, объект остаётся там, куда его поставил аниматор.
-        bool anyKeys = false;
-        for (const Curve& c : track.Channels) {
-            if (!c.Empty()) { anyKeys = true; break; }
-        }
-        if (!anyKeys) continue;
-
-        // Текущее значение — база для каналов без ключей (заключили только X —
-        // Y и Z остаются такими, как в сцене, а не схлопываются в ноль).
-        float values[3] = {0.0f, 0.0f, 0.0f};
-        if (!ReadProperty(scene, track.TargetId, track.Prop, values)) continue;
-
-        const int channels = std::min(track.ChannelCount(), 3);
-        for (int c = 0; c < channels; ++c) {
-            const Curve& curve = track.Channels[(size_t)c];
-            if (!curve.Empty()) values[c] = curve.Evaluate(time, values[c]);
-        }
-        WriteProperty(scene, track.TargetId, track.Prop, values);
-    }
+    // ПОРЯДОК ВАЖЕН: сначала клипы, потом свойства.
+    //
+    // Костная дорожка читает текущую позу как базу для каналов без ключей. Если
+    // сначала выполнить дорожки свойств, эта база придёт из позы ПРОШЛОГО кадра
+    // (клип ещё не перемотан), и кость с ключами только на повороте таскала бы
+    // за собой позапрошлый перенос. Клипы ни от чего не зависят, поэтому им
+    // ничего не стоит идти первыми.
 
     // --- Дорожки клипов: ведём движковый Animator сущности ---
     auto& reg = scene.Registry();
@@ -261,6 +345,37 @@ void AnimationDocument::Apply(Scene& scene, float time, bool seeking) const {
             // здесь мы только задаём, ЧТО и с какой скоростью играет.
         }
     }
+
+    // --- Дорожки свойств: сэмплируем кривые и пишем в компоненты ---
+    for (const Track& track : Tracks) {
+        if (track.Muted || track.Channels.empty()) continue;
+
+        // Полностью пустая дорожка не должна перетирать сцену нулями: пока в ней
+        // нет ни одного ключа, объект остаётся там, куда его поставил аниматор.
+        bool anyKeys = false;
+        for (const Curve& c : track.Channels) {
+            if (!c.Empty()) { anyKeys = true; break; }
+        }
+        if (!anyKeys) continue;
+
+        // Текущее значение — база для каналов без ключей (заключили только X —
+        // Y и Z остаются такими, как в сцене, а не схлопываются в ноль).
+        float values[3] = {0.0f, 0.0f, 0.0f};
+        if (!ReadProperty(scene, track.TargetId, track.Prop, values, track.Joint)) continue;
+
+        const int channels = std::min(track.ChannelCount(), 3);
+        for (int c = 0; c < channels; ++c) {
+            const Curve& curve = track.Channels[(size_t)c];
+            if (!curve.Empty()) values[c] = curve.Evaluate(time, values[c]);
+        }
+        WriteProperty(scene, track.TargetId, track.Prop, values, track.Joint);
+    }
+
+    // Указатель на переопределения позы движок держит «сырым», а хранилище
+    // компонентов могло переехать в памяти между кадрами (добавили объект,
+    // откатили undo). Переустанавливаем его каждый кадр — это дёшево и снимает
+    // целый класс висячих указателей.
+    SyncAllPoseOverrides(scene);
 }
 
 float AnimationDocument::ContentEnd() const {

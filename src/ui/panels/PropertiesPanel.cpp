@@ -4,6 +4,7 @@
 
 #include "imgui.h"
 
+#include "anim/BonePose.h"
 #include "anim/DirectorComponents.h"
 #include "sage/render/SkinnedModel.h" // список клипов персонажа в инспекторе
 #include "sage/scene/Components.h"
@@ -44,17 +45,18 @@ void RowLabel(const char* label) {
 //  Ромб-ключ
 // ============================================================================
 
-void PropertiesPanel::DrawKeyDiamond(DirectorHost& host, Property prop, bool hasProp) {
+void PropertiesPanel::DrawKeyDiamond(DirectorHost& host, Property prop, bool hasProp, int joint) {
     ImGui::SameLine();
     ImGui::SetCursorPosX(ImGui::GetWindowContentRegionMax().x - kKeyColumn + 4.0f);
 
     const int id = host.SelectedId();
     const AnimationDocument& doc = host.Document();
-    const Track* track = doc.FindTrack(id, prop);
+    const Track* track = doc.FindTrack(id, prop, joint);
     const bool hasTrack = track != nullptr;
     const bool hasKey = hasTrack && doc.HasKeyAt(*track, host.CurrentTime());
 
     ImGui::PushID((int)prop);
+    ImGui::PushID(joint);
     const ImVec2 pos = ImGui::GetCursorScreenPos();
     const float size = ImGui::GetFrameHeight();
     const bool clicked = ImGui::InvisibleButton("##key", ImVec2(size, size)) && hasProp;
@@ -97,11 +99,17 @@ void PropertiesPanel::DrawKeyDiamond(DirectorHost& host, Property prop, bool has
             }
             if (!anyLeft) host.Document().RemoveTrack(mutableTrack->Id);
             host.SetStatus("Ключ убран");
+        } else if (joint >= 0) {
+            // Костное свойство ключится напрямую: у KeyProperty кости нет, а
+            // заводить ради этого ещё один метод хоста — лишний слой.
+            host.Document().KeyFromScene(host.CurrentScene(), id, prop, host.CurrentTime(), joint);
+            host.SetStatus("Ключ на кости поставлен");
         } else {
             host.KeyProperty(id, prop);
             host.SetStatus("Ключ поставлен");
         }
     }
+    ImGui::PopID();
     ImGui::PopID();
 }
 
@@ -110,7 +118,7 @@ void PropertiesPanel::DrawKeyDiamond(DirectorHost& host, Property prop, bool has
 // ============================================================================
 
 bool PropertiesPanel::DrawVec3Row(DirectorHost& host, const char* label, float* value,
-                                  Property prop, float speed, const char* format) {
+                                  Property prop, float speed, const char* format, int joint) {
     ImGui::PushID(label);
     ImGui::TextUnformatted(label);
 
@@ -136,7 +144,7 @@ bool PropertiesPanel::DrawVec3Row(DirectorHost& host, const char* label, float* 
         ImGui::PopID();
     }
 
-    DrawKeyDiamond(host, prop, true);
+    DrawKeyDiamond(host, prop, true, joint);
     ImGui::PopID();
     return changed;
 }
@@ -181,6 +189,83 @@ bool PropertiesPanel::DrawEffectRow(DirectorHost& host, const char* label, bool*
 // ============================================================================
 //  Панель
 // ============================================================================
+
+void PropertiesPanel::DrawBoneSection(DirectorHost& host) {
+    const BoneSelection& bone = host.SelectedBone();
+    if (!bone.Valid() || bone.EntityId != host.SelectedId()) return;
+
+    Scene& scene = host.CurrentScene();
+    const sage::anim::Skeleton* skeleton = SkeletonOf(scene, bone.EntityId);
+    if (!skeleton || bone.Joint >= skeleton->Count()) return;
+
+    const sage::anim::Joint& joint = skeleton->Joints[(size_t)bone.Joint];
+    char title[160];
+    std::snprintf(title, sizeof(title), "Bone — %s",
+                  joint.Name.empty() ? "(без имени)" : joint.Name.c_str());
+    if (!SectionHeader(title)) return;
+
+    ImGui::Spacing();
+    if (joint.Parent >= 0 && joint.Parent < skeleton->Count()) {
+        ImGui::TextDisabled("Родитель: %s", skeleton->Joints[(size_t)joint.Parent].Name.c_str());
+    } else {
+        ImGui::TextDisabled("Корневая кость");
+    }
+    ImGui::Spacing();
+
+    // Значения ЛОКАЛЬНЫЕ — относительно родительской кости, как их хранит клип.
+    // Мировые координаты кости аниматору не нужны и только путали бы: «согнуть
+    // локоть на 30°» — это локальный поворот, а не позиция в мире.
+    glm::vec3 t, s;
+    glm::quat r;
+    if (!ReadBoneLocal(scene, bone.EntityId, bone.Joint, t, r, s)) {
+        ImGui::TextDisabled("Поза ещё не посчитана — модель загружается.");
+        return;
+    }
+    glm::vec3 euler = EulerDegreesFromQuat(r);
+
+    bool edited = false;
+    if (DrawVec3Row(host, "Location", &t.x, Property::BonePosition, 0.005f, "%.4f", bone.Joint)) {
+        const float v[3] = {t.x, t.y, t.z};
+        WriteBoneChannel(scene, bone.EntityId, bone.Joint, BoneChannel::Translation, v);
+        edited = true;
+    }
+    ImGui::Spacing();
+    if (DrawVec3Row(host, "Rotation", &euler.x, Property::BoneRotation, 0.25f, "%.2f", bone.Joint)) {
+        const float v[3] = {euler.x, euler.y, euler.z};
+        WriteBoneChannel(scene, bone.EntityId, bone.Joint, BoneChannel::Rotation, v);
+        edited = true;
+    }
+    ImGui::Spacing();
+    if (DrawVec3Row(host, "Scale", &s.x, Property::BoneScale, 0.005f, "%.4f", bone.Joint)) {
+        const float v[3] = {s.x, s.y, s.z};
+        WriteBoneChannel(scene, bone.EntityId, bone.Joint, BoneChannel::Scale, v);
+        edited = true;
+    }
+    if (edited) host.NotifyObjectEdited(bone.EntityId);
+
+    ImGui::Spacing();
+    if (ImGui::Button("Ключ на кость")) host.KeyBone();
+    ImGui::SameLine();
+    if (ImGui::Button("Заключить позу")) host.KeyWholePose(bone.EntityId);
+    ImGui::SameLine();
+    if (ImGui::Button("Сброс")) {
+        // Сбрасываем только ЭТУ кость: «сброс всей позы» есть в дереве сцены, и
+        // потерять всю работу по кнопке рядом с одной костью было бы обидно.
+        host.PushUndo();
+        for (BoneChannel channel : {BoneChannel::Translation, BoneChannel::Rotation,
+                                    BoneChannel::Scale}) {
+            ClearBoneChannel(scene, bone.EntityId, bone.Joint, channel);
+        }
+        host.SetStatus("Кость вернулась под управление клипа");
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Снять ручную позу с ЭТОЙ кости — она снова пойдёт за клипом");
+    }
+
+    ImGui::Spacing();
+    ImGui::TextDisabled("Значения локальные — относительно родительской кости.");
+    ImGui::Spacing();
+}
 
 void PropertiesPanel::Draw(DirectorHost& host) {
     ImGui::Begin("Properties");
@@ -235,6 +320,11 @@ void PropertiesPanel::Draw(DirectorHost& host) {
         ImGui::Spacing();
         if (edited) host.NotifyObjectEdited(id);
     }
+
+    // --- Bone ---
+    // Сразу после Transform: когда правишь кость, это и есть главное, ради чего
+    // открыт инспектор, и искать его под настройками пост-обработки незачем.
+    DrawBoneSection(host);
 
     // --- Camera ---
     if (CameraComponent* cam = reg.try_get<CameraComponent>(e)) {

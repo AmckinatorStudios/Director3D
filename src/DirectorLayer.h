@@ -60,7 +60,14 @@ public:
     const std::vector<int>& Selection() const override { return m_selection; }
     bool IsSelected(int id) const override;
     void ToggleSelection(int id) override;
-    void ClearSelection() override { m_selection.clear(); }
+    void ClearSelection() override { m_selection.clear(); m_bone.Clear(); }
+
+    // --- DirectorHost: кости ---
+    const BoneSelection& SelectedBone() const override { return m_bone; }
+    void SelectBone(int entityId, int joint) override;
+    int KeyBone() override;
+    int KeyWholePose(int entityId) override;
+    void ResetPose(int entityId) override;
 
     // --- DirectorHost: анимация ---
     AnimationDocument& Document() override { return m_doc; }
@@ -149,6 +156,10 @@ private:
     // переменной D3D_SMOKE_TEST; в CI заменяет человека за монитором.
     void StartSmokeTest();
     void FinishSmokeTest();
+    // Сквозная проверка ручной анимации костей на ЖИВОМ скелете и живом GL.
+    // Headless-самотест сюда не достаёт: скелет приезжает вместе с моделью, а
+    // она требует графического контекста. Включается D3D_BONE_TEST.
+    void RunBoneCheck();
     void BuildDockLayout(unsigned int dockspaceId);
     void ApplyDocument(bool seeking);
     void HandleShortcuts();
@@ -174,6 +185,14 @@ private:
     Camera m_camera;
 
     std::vector<int> m_selection;
+    BoneSelection m_bone;
+    // Костные дорожки ждут, пока движок догрузит модель, чтобы пересесть на
+    // индексы костей по именам. Флаг снимается, когда ждать больше некого.
+    bool m_rebindBones = false;
+    // Проверка костей ждёт, пока движок догрузит модель персонажа; -1 — не идёт.
+    int m_boneCheckFrames = -1;
+    int m_pendingBoneSelect = -1; // кость из D3D_CHARACTER, ждущая загрузки модели
+    bool m_pendingBoneKeys = false; // поставить пару ключей на неё (для снимков)
     int m_activeCameraId = -1;
     bool m_autoKey = false;
     bool m_simpleMode = true; // старт в простом режиме: инструмент должен быть понятен сразу

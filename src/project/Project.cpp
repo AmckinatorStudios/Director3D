@@ -57,6 +57,27 @@ json SaveDirectorComponents(Scene& scene) {
         if (const SourceAssetComponent* a = reg.try_get<SourceAssetComponent>(e)) {
             if (!a->Path.empty()) { entry["sourceAsset"] = a->Path; any = true; }
         }
+        if (const PoseComponent* p = reg.try_get<PoseComponent>(e)) {
+            // Пишем ТОЛЬКО переопределённые кости: у персонажа их сотня, а
+            // тронуты обычно единицы, и полный вектор раздул бы проект на
+            // порядок пустыми записями.
+            json joints = json::array();
+            for (size_t i = 0; i < p->Joints.size(); ++i) {
+                const sage::anim::JointPose& jp = p->Joints[i];
+                if (!jp.Any()) continue;
+                json j;
+                j["joint"] = (int)i;
+                if (jp.HasTranslation) {
+                    j["t"] = {jp.Translation.x, jp.Translation.y, jp.Translation.z};
+                }
+                if (jp.HasRotation) {
+                    j["r"] = {jp.Rotation.x, jp.Rotation.y, jp.Rotation.z, jp.Rotation.w};
+                }
+                if (jp.HasScale) j["s"] = {jp.Scale.x, jp.Scale.y, jp.Scale.z};
+                joints.push_back(std::move(j));
+            }
+            if (!joints.empty()) { entry["pose"] = std::move(joints); any = true; }
+        }
 
         if (any) {
             entry["id"] = id;
@@ -110,6 +131,32 @@ void LoadDirectorComponents(Scene& scene, const json& arr) {
             reg.emplace_or_replace<SourceAssetComponent>(
                 e, SourceAssetComponent{entry.value("sourceAsset", std::string{})});
         }
+        if (entry.contains("pose")) {
+            PoseComponent pose;
+            for (const json& j : entry["pose"]) {
+                const int joint = j.value("joint", -1);
+                if (joint < 0) continue;
+                // Размер вектора диктует файл: скелета здесь ещё нет (модель
+                // грузится лениво, уже после разбора проекта), поэтому сверять
+                // индексы не с чем. Лишние кости отсекутся сами — движок берёт
+                // min(размер скелета, размер вектора).
+                if ((int)pose.Joints.size() <= joint) pose.Joints.resize((size_t)joint + 1);
+                sage::anim::JointPose& jp = pose.Joints[(size_t)joint];
+                if (j.contains("t") && j["t"].size() == 3) {
+                    jp.Translation = {j["t"][0], j["t"][1], j["t"][2]};
+                    jp.HasTranslation = true;
+                }
+                if (j.contains("r") && j["r"].size() == 4) {
+                    jp.Rotation = glm::quat(j["r"][3], j["r"][0], j["r"][1], j["r"][2]);
+                    jp.HasRotation = true;
+                }
+                if (j.contains("s") && j["s"].size() == 3) {
+                    jp.Scale = {j["s"][0], j["s"][1], j["s"][2]};
+                    jp.HasScale = true;
+                }
+            }
+            if (!pose.Joints.empty()) reg.emplace_or_replace<PoseComponent>(e, std::move(pose));
+        }
     }
 }
 
@@ -156,6 +203,12 @@ json SaveDocument(const AnimationDocument& doc) {
         jt["id"] = t.Id;
         jt["target"] = t.TargetId;
         jt["property"] = PropertyInfoOf(t.Prop).Key;
+        if (IsBoneProperty(t.Prop)) {
+            // Пишем и индекс, и имя: имя — основная привязка (переживает
+            // переэкспорт модели), индекс — запасная, если кости переименовали.
+            jt["joint"] = t.Joint;
+            jt["jointName"] = t.JointName;
+        }
         jt["muted"] = t.Muted;
         jt["locked"] = t.Locked;
         jt["expanded"] = t.Expanded;
@@ -213,6 +266,10 @@ void LoadDocument(AnimationDocument& doc, const json& in) {
         t.Id = jt.value("id", 0);
         t.TargetId = jt.value("target", 0);
         t.Prop = prop;
+        if (IsBoneProperty(prop)) {
+            t.Joint = jt.value("joint", -1);
+            t.JointName = jt.value("jointName", std::string{});
+        }
         t.Muted = jt.value("muted", false);
         t.Locked = jt.value("locked", false);
         t.Expanded = jt.value("expanded", true);

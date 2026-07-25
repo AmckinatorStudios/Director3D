@@ -16,8 +16,10 @@ public:
 private:
     // Строка «подпись + поля XYZ + ромб-ключ». Возвращает true, если значение
     // изменили — вызывающий пишет его в компонент.
+    // joint >= 0 — строка относится к КОСТИ: ромб смотрит на костную дорожку
+    // этой кости, а не на дорожку объекта.
     bool DrawVec3Row(DirectorHost& host, const char* label, float* value,
-                     Property prop, float speed, const char* format);
+                     Property prop, float speed, const char* format, int joint = -1);
     // То же для одного числа (FOV, интенсивность, диафрагма).
     bool DrawFloatRow(DirectorHost& host, const char* label, float* value,
                       Property prop, float speed, float lo, float hi, const char* format);
@@ -27,7 +29,10 @@ private:
     // Ромб-ключ справа от строки: закрашен, если ключ на текущем кадре есть.
     // Клик ставит/убирает ключ. prop == Property::Position и т.п.; hasProp ==
     // false рисует место под ромб, но не даёт его нажать (свойство не анимируемо).
-    void DrawKeyDiamond(DirectorHost& host, Property prop, bool hasProp);
+    void DrawKeyDiamond(DirectorHost& host, Property prop, bool hasProp, int joint = -1);
+    // Раздел «Bone» — появляется, когда выбрана кость. Здесь локальные TRS
+    // кости с ромбами ключей и кнопки работы с позой.
+    void DrawBoneSection(DirectorHost& host);
 };
 
 } // namespace d3d

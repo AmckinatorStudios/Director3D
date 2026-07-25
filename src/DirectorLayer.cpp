@@ -14,6 +14,7 @@
 #include "imgui_impl_opengl3.h"
 #include "imgui_internal.h" // DockBuilder — раскладка панелей по умолчанию
 
+#include "anim/BonePose.h"
 #include "anim/DirectorComponents.h"
 #include "project/Project.h"
 #include "render/VideoWriter.h"
@@ -131,7 +132,25 @@ void DirectorLayer::OnAttach() {
     if (std::getenv("D3D_ADVANCED")) m_simpleMode = false;
     if (const char* tab = std::getenv("D3D_TIMELINE_TAB")) m_timeline.SetTab(std::atoi(tab));
     if (std::getenv("D3D_DEMO")) BuildDemoAnimation();
+    // Персонаж с выбранной костью — для снимков интерфейса без человека за
+    // мышью: иначе панель Bone и скелет во вьюпорте нечем показать.
+    if (const char* boneEnv = std::getenv("D3D_CHARACTER")) {
+        const int character = Create(CreateKind::Character);
+        RenameObject(character, "Character");
+        SetSelectedId(character);
+        const int joint = std::atoi(boneEnv);
+        if (joint > 0) m_pendingBoneSelect = joint;
+        // Пара ключей на кости — чтобы на снимке было видно и костные дорожки
+        // таймлайна, а не только пустую сетку.
+        if (std::getenv("D3D_CHARACTER_KEYS")) m_pendingBoneKeys = true;
+    }
     if (std::getenv("D3D_SMOKE_TEST")) StartSmokeTest();
+    if (std::getenv("D3D_BONE_TEST")) {
+        // Персонаж создаётся тем же вызовом, что и по кнопке Create > Character,
+        // а модель грузится лениво — отсюда ожидание в кадрах.
+        SetSelectedId(Create(CreateKind::Character));
+        m_boneCheckFrames = 0;
+    }
 }
 
 void DirectorLayer::OnDetach() {
@@ -154,6 +173,7 @@ void DirectorLayer::BuildDefaultScene() {
     m_doc.Fps = 24.0f;
     m_doc.Duration = 20.0f;
     m_selection.clear();
+    m_bone.Clear();
     m_undo.Clear();
     m_playback.Stop();
     m_dirty = false;
@@ -372,6 +392,33 @@ void DirectorLayer::FinishSmokeTest() {
 // ============================================================================
 
 void DirectorLayer::OnUpdate(float dt) {
+    // Выбор кости из переменной окружения откладывается до загрузки модели:
+    // раньше скелета ещё нет и выбирать нечего.
+    if (m_pendingBoneSelect > 0 && SkeletonOf(*m_scene, SelectedId())) {
+        SelectBone(SelectedId(), m_pendingBoneSelect);
+        m_pendingBoneSelect = -1;
+        if (m_pendingBoneKeys) {
+            m_pendingBoneKeys = false;
+            const int id = SelectedId(), joint = m_bone.Joint;
+            SetCurrentTime(0.0f);
+            const float a[3] = {0.0f, 0.0f, 0.0f};
+            WriteBoneChannel(*m_scene, id, joint, BoneChannel::Rotation, a);
+            m_doc.KeyBone(*m_scene, id, joint, 0.0f);
+            const float b[3] = {0.0f, 0.0f, 55.0f};
+            WriteBoneChannel(*m_scene, id, joint, BoneChannel::Rotation, b);
+            m_doc.KeyBone(*m_scene, id, joint, 2.0f);
+            SetCurrentTime(1.0f);
+        }
+    }
+
+    // Проверка костей ждёт, пока движок догрузит модель персонажа: скелет
+    // появляется только после этого. Пара кадров — и он на месте.
+    if (m_boneCheckFrames >= 0 && ++m_boneCheckFrames > 3) {
+        m_boneCheckFrames = -1;
+        RunBoneCheck();
+        return;
+    }
+
     if (m_statusTimer > 0.0f) {
         m_statusTimer -= dt;
         if (m_statusTimer <= 0.0f) m_status.clear();
@@ -645,7 +692,13 @@ void DirectorLayer::HandleShortcuts() {
             SetStatus("Метка поставлена");
         }
         if (ImGui::IsKeyPressed(ImGuiKey_F12)) StartRender();
-        if (ImGui::IsKeyPressed(ImGuiKey_Escape)) ClearSelection();
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+            // Esc уходит на один уровень вверх: сперва снимает кость, и только
+            // потом — сам объект. Иначе выйти из правки скелета, не потеряв
+            // персонажа, было бы нечем.
+            if (m_bone.Valid()) SelectBone(m_bone.EntityId, -1);
+            else ClearSelection();
+        }
         // Delete во вьюпорте/дереве удаляет объект; в таймлайне его перехватывает
         // сама панель (там Delete убирает ключи).
         if (ImGui::IsKeyPressed(ImGuiKey_Delete) && !ImGui::IsWindowFocused(ImGuiFocusedFlags_AnyWindow)) {
@@ -687,6 +740,16 @@ void DirectorLayer::ValidateSelection() {
     m_selection.erase(std::remove_if(m_selection.begin(), m_selection.end(),
                                      [this](int id) { return !m_scene->Get(id).Valid(); }),
                       m_selection.end());
+    // Выбранная кость могла пережить замену сцены (загрузка проекта, откат),
+    // где персонажа уже нет или у него другой скелет.
+    if (m_bone.Valid()) {
+        const sage::anim::Skeleton* sk = SkeletonOf(*m_scene, m_bone.EntityId);
+        // Скелета может ещё не быть (модель грузится) — это не повод терять
+        // выбор; сбрасываем только заведомо неверное.
+        if (!m_scene->Get(m_bone.EntityId).Valid() || (sk && m_bone.Joint >= sk->Count())) {
+            m_bone.Clear();
+        }
+    }
     if (!m_scene->Get(m_activeCameraId).Valid()) {
         // Активная камера пропала — берём любую другую, иначе Render View и
         // экспорт остались бы «без глаз» без объяснения.
@@ -755,6 +818,12 @@ void DirectorLayer::PickAtStage(float u, float v, bool additive) {
 // ============================================================================
 
 void DirectorLayer::ApplyDocument(bool seeking) {
+    // Костные дорожки пересаживаются на актуальные индексы костей, как только
+    // движок догрузит модель, — но не раньше, поэтому пробуем каждый кадр,
+    // пока есть кого ждать. Перебор по именам недёшев, и держать его вечно
+    // незачем: как только ждать некого, флаг снимается.
+    if (m_rebindBones && m_doc.RebindBoneTracks(*m_scene) == 0) m_rebindBones = false;
+
     m_doc.Apply(*m_scene, m_playback.Time(), seeking);
     if (seeking) {
         // Перемотка должна показать позу СРАЗУ, не дожидаясь следующего
@@ -785,7 +854,178 @@ bool DirectorLayer::KeyProperty(int entityId, Property prop) {
     return true;
 }
 
+// ============================================================================
+//  Кости персонажа
+// ============================================================================
+
+// Сквозная проверка ручной анимации костей. Проверяется ровно та цепочка,
+// которой пользуется аниматор: выбрать кость -> согнуть -> убедиться, что
+// поехал ребёнок -> поставить два ключа -> перемотать между ними -> убедиться,
+// что поза интерполируется. Всё через те же вызовы, что и интерфейс.
+void DirectorLayer::RunBoneCheck() {
+    const int id = SelectedId();
+    int passed = 0, failed = 0;
+    auto check = [&](bool ok, const char* what) {
+        if (ok) { ++passed; return; }
+        ++failed;
+        LOG_ERROR("BoneCheck") << "ПРОВАЛ: " << what;
+    };
+
+    const sage::anim::Skeleton* sk = SkeletonOf(*m_scene, id);
+    if (!sk || sk->Count() < 3) {
+        LOG_ERROR("BoneCheck") << "ПРОВАЛЕНА: у персонажа нет скелета";
+        sage::Application::Get().Close();
+        return;
+    }
+    LOG_INFO("BoneCheck") << "Скелет персонажа: костей " << sk->Count();
+
+    // Кость 1 — первая после корня; её ребёнок покажет, что поворот разошёлся
+    // по цепочке, а не остался «в себе».
+    const int joint = 1;
+    int child = -1;
+    for (int i = 0; i < sk->Count(); ++i) {
+        if (sk->Joints[(size_t)i].Parent == joint) { child = i; break; }
+    }
+    check(child > 0, "у кости есть ребёнок (иначе проверять нечего)");
+    if (child < 0) { sage::Application::Get().Close(); return; }
+
+    SelectBone(id, joint);
+    check(SelectedBone().Is(id, joint), "кость выбралась");
+    check(SelectedId() == id, "выбор кости не потерял персонажа");
+
+    // Поза, которую даёт КЛИП, — эталон для проверки сброса в конце. Ноль тут
+    // не годится: демо-клип гнёт эту кость, и «вернуться к клипу» означает
+    // вернуться именно к его значению, а не выпрямиться.
+    float clipPose[3] = {0, 0, 0};
+    check(ReadBoneChannel(*m_scene, id, joint, BoneChannel::Rotation, clipPose),
+          "поза от клипа читается до правки");
+    LOG_INFO("BoneCheck") << "Поворот от клипа: " << clipPose[2] << " градусов";
+
+    glm::mat4 before;
+    check(BoneWorldMatrix(*m_scene, id, child, before), "мировая матрица ребёнка читается");
+    const glm::vec3 childBefore(before[3]);
+
+    // --- Гнём кость ---
+    const float bend[3] = {0.0f, 0.0f, 70.0f};
+    check(WriteBoneChannel(*m_scene, id, joint, BoneChannel::Rotation, bend), "поворот кости записан");
+
+    glm::mat4 after;
+    check(BoneWorldMatrix(*m_scene, id, child, after), "матрица ребёнка читается после правки");
+    const glm::vec3 childAfter(after[3]);
+    const float moved = glm::length(childAfter - childBefore);
+    check(moved > 0.05f, "поворот кости сдвинул её ребёнка");
+    LOG_INFO("BoneCheck") << "Ребёнок сместился на " << moved << " м";
+
+    // Прочитанное обратно значение должно совпасть с записанным — иначе круг
+    // «углы -> кватернион -> поза -> углы» где-то теряет данные.
+    float readBack[3] = {0, 0, 0};
+    check(ReadBoneChannel(*m_scene, id, joint, BoneChannel::Rotation, readBack),
+          "поворот кости читается обратно");
+    check(std::fabs(readBack[2] - 70.0f) < 0.5f, "прочитанный поворот совпал с записанным");
+
+    // Корень трогать не просили — он не должен был поехать.
+    glm::mat4 rootWorld;
+    check(BoneWorldMatrix(*m_scene, id, 0, rootWorld), "матрица корня читается");
+    check(glm::length(glm::vec3(rootWorld[3]) - glm::vec3(m_scene->WorldMatrix(
+              m_scene->Get(id).Entity())[3])) < 0.01f,
+          "нетронутая корневая кость осталась на месте");
+
+    // --- Ключи и перемотка ---
+    SetCurrentTime(0.0f);
+    const float straight[3] = {0.0f, 0.0f, 0.0f};
+    WriteBoneChannel(*m_scene, id, joint, BoneChannel::Rotation, straight);
+    check(KeyBone() > 0, "ключ на кости поставлен в начале");
+
+    SetCurrentTime(1.0f);
+    const float bent[3] = {0.0f, 0.0f, 80.0f};
+    WriteBoneChannel(*m_scene, id, joint, BoneChannel::Rotation, bent);
+    check(KeyBone() > 0, "ключ на кости поставлен в конце");
+    check(m_doc.HasBoneTracks(id), "костные дорожки появились в документе");
+
+    // Перемотка на середину: документ обязан САМ поставить позу между ключами.
+    SetCurrentTime(0.5f);
+    float middle[3] = {0, 0, 0};
+    check(ReadBoneChannel(*m_scene, id, joint, BoneChannel::Rotation, middle),
+          "поза читается на середине");
+    check(middle[2] > 5.0f && middle[2] < 75.0f,
+          "на середине поза между ключами, а не на одном из них");
+    LOG_INFO("BoneCheck") << "Поворот в середине: " << middle[2] << " градусов";
+
+    // Возврат в начало должен дать ровно первый ключ.
+    SetCurrentTime(0.0f);
+    float atStart[3] = {0, 0, 0};
+    ReadBoneChannel(*m_scene, id, joint, BoneChannel::Rotation, atStart);
+    check(std::fabs(atStart[2]) < 1.0f, "в начале поза вернулась к первому ключу");
+
+    // --- Сброс позы ---
+    // Ручная поза снимается, дорожки остаются: следующий Apply снова наложит
+    // ключи. Поэтому сверяем СРАЗУ, до применения документа, — и именно с позой
+    // клипа, а не с нулём.
+    ResetPose(id);
+    float afterReset[3] = {0, 0, 0};
+    ReadBoneChannel(*m_scene, id, joint, BoneChannel::Rotation, afterReset);
+    LOG_INFO("BoneCheck") << "Поворот после сброса: " << afterReset[2] << " градусов";
+    check(std::fabs(afterReset[2] - clipPose[2]) < 0.5f, "после сброса кость вернулась к клипу");
+    check(std::fabs(afterReset[2]) > 1.0f, "поза клипа не выродилась в ноль (иначе проверка пустая)");
+
+    if (failed == 0) {
+        LOG_INFO("BoneCheck") << "Проверка костей ПРОЙДЕНА: " << passed << " из "
+                              << (passed + failed);
+    } else {
+        LOG_ERROR("BoneCheck") << "Проверка костей ПРОВАЛЕНА: провалов " << failed << " из "
+                               << (passed + failed);
+    }
+    sage::Application::Get().Close();
+}
+
+void DirectorLayer::SelectBone(int entityId, int joint) {
+    if (joint < 0) {
+        m_bone.Clear();
+        return;
+    }
+    // Кость выбирается ВНУТРИ персонажа, поэтому сам персонаж тоже становится
+    // выбранным: иначе инспектор показывал бы чужой объект, а «навести камеру»
+    // летело бы не туда.
+    if (!IsSelected(entityId)) m_selection = {entityId};
+    m_bone.EntityId = entityId;
+    m_bone.Joint = joint;
+}
+
+int DirectorLayer::KeyBone() {
+    if (!m_bone.Valid()) return 0;
+    PushUndo();
+    const int keyed = m_doc.KeyBone(*m_scene, m_bone.EntityId, m_bone.Joint, CurrentTime());
+    if (keyed > 0) {
+        m_dirty = true;
+        SetStatus("Ключ на кости " + JointName(*m_scene, m_bone.EntityId, m_bone.Joint));
+    } else {
+        SetStatus("Скелет ещё не готов — ключить нечего");
+    }
+    return keyed;
+}
+
+int DirectorLayer::KeyWholePose(int entityId) {
+    PushUndo();
+    const int keyed = m_doc.KeyPose(*m_scene, entityId, CurrentTime());
+    if (keyed > 0) {
+        m_dirty = true;
+        SetStatus("Поза заключена: дорожек " + std::to_string(keyed));
+    } else {
+        SetStatus("Нечего ключить: поза не тронута");
+    }
+    return keyed;
+}
+
+void DirectorLayer::ResetPose(int entityId) {
+    PushUndo();
+    ClearPose(*m_scene, entityId);
+    m_dirty = true;
+    SetStatus("Ручная поза снята — персонаж вернулся к клипу");
+}
+
 int DirectorLayer::KeySelected() {
+    // Кость выбрана — ключим её, а не персонажа целиком: на то она и выбрана.
+    if (m_bone.Valid()) return KeyBone();
     if (m_selection.empty()) return 0;
     PushUndo();
 
@@ -810,6 +1050,12 @@ int DirectorLayer::KeySelected() {
 void DirectorLayer::NotifyObjectEdited(int entityId) {
     m_dirty = true;
     if (!m_autoKey) return;
+    // Правим кость — авто-ключ идёт на кость, а не на трансформ персонажа:
+    // персонаж-то как раз не двигался.
+    if (m_bone.Valid() && m_bone.EntityId == entityId) {
+        m_doc.KeyBone(*m_scene, entityId, m_bone.Joint, CurrentTime());
+        return;
+    }
     // Авто-ключ пишет только в СУЩЕСТВУЮЩИЕ дорожки: иначе каждое случайное
     // касание ползунка заводило бы новую дорожку и засоряло проект.
     if (m_doc.KeyExistingTracks(*m_scene, entityId, CurrentTime()) == 0) {
@@ -836,6 +1082,9 @@ void DirectorLayer::RestoreSnapshot(const std::string& snapshot) {
         return;
     }
     m_scene = std::move(restored);
+    // Сцену подменили целиком — модели персонажей загрузятся заново, и
+    // костные дорожки снова должны найти свои кости.
+    m_rebindBones = true;
     ValidateSelection();
     ApplyDocument(true);
     m_renderer.ResetMotionHistory(); // сцену подменили — старая камера не в счёт
@@ -1143,9 +1392,13 @@ bool DirectorLayer::OpenProject(const fs::path& path, std::string& err) {
     m_scene = std::move(loaded);
     m_projectPath = path;
     m_selection.clear();
+    m_bone.Clear();
     m_undo.Clear();
     m_playback.Stop();
     m_dirty = false;
+    // Скелеты появятся только когда движок догрузит модели — до тех пор
+    // костные дорожки не знают своих индексов (см. ApplyDocument).
+    m_rebindBones = true;
 
     // Активной делаем первую камеру загруженной сцены.
     m_activeCameraId = -1;

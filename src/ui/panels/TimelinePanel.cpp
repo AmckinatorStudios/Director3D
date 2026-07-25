@@ -9,6 +9,7 @@
 #include "imgui_internal.h" // ImRect для попадания мышью в произвольные области
 #include "imgui_stdlib.h"
 
+#include "anim/BonePose.h"
 #include "anim/DirectorComponents.h"
 #include "sage/render/SkinnedModel.h"
 #include "sage/scene/Components.h"
@@ -412,8 +413,18 @@ float TimelinePanel::DrawTrackHeader(DirectorHost& host, Track& track, const Lay
     Icons::Draw(dl, Icon::Curve, ImVec2(rowA.x + 34.0f, arrowY), 12.0f,
                 track.Muted ? Theme::Colors::TextFaint : info.ChannelColors[0]);
 
-    char label[128];
-    std::snprintf(label, sizeof(label), "%s", info.Label);
+    char label[192];
+    if (IsBoneProperty(track.Prop)) {
+        // У персонажа таких дорожек десятки, и «Bone Rotation» без имени кости
+        // не отличить одну от другой.
+        const std::string bone = !track.JointName.empty()
+                                     ? track.JointName
+                                     : JointName(scene, track.TargetId, track.Joint);
+        std::snprintf(label, sizeof(label), "%s · %s",
+                      bone.empty() ? "?" : bone.c_str(), info.Label);
+    } else {
+        std::snprintf(label, sizeof(label), "%s", info.Label);
+    }
     dl->AddText(ImVec2(rowA.x + 46.0f, y + 3.0f),
                 track.Muted ? Theme::Colors::TextFaint : Theme::Colors::Text, label);
 
@@ -425,7 +436,12 @@ float TimelinePanel::DrawTrackHeader(DirectorHost& host, Track& track, const Lay
                           hasKey, !track.Locked, 18.0f)) {
         host.PushUndo();
         if (hasKey) host.Document().RemoveKeysAt(track, host.CurrentTime());
-        else host.KeyProperty(track.TargetId, track.Prop);
+        else if (IsBoneProperty(track.Prop)) {
+            host.Document().KeyFromScene(scene, track.TargetId, track.Prop, host.CurrentTime(),
+                                         track.Joint);
+        } else {
+            host.KeyProperty(track.TargetId, track.Prop);
+        }
     }
     ImGui::SameLine(0.0f, 2.0f);
     bool notMuted = !track.Muted;
@@ -448,7 +464,15 @@ float TimelinePanel::DrawTrackHeader(DirectorHost& host, Track& track, const Lay
         ImGui::Separator();
         if (ImGui::MenuItem("Поставить ключ")) {
             host.PushUndo();
-            host.KeyProperty(track.TargetId, track.Prop);
+            if (IsBoneProperty(track.Prop)) {
+                host.Document().KeyFromScene(scene, track.TargetId, track.Prop, host.CurrentTime(),
+                                             track.Joint);
+            } else {
+                host.KeyProperty(track.TargetId, track.Prop);
+            }
+        }
+        if (IsBoneProperty(track.Prop) && ImGui::MenuItem("Выбрать эту кость")) {
+            host.SelectBone(track.TargetId, track.Joint);
         }
         if (ImGui::MenuItem("Очистить все ключи")) {
             host.PushUndo();
@@ -782,7 +806,8 @@ void TimelinePanel::DrawTimelineTab(DirectorHost& host, const Layout& l) {
             const std::string name = TargetName(host.CurrentScene(), track.TargetId);
             const std::string label = PropertyInfoOf(track.Prop).Label;
             if (name.find(m_filter) == std::string::npos &&
-                label.find(m_filter) == std::string::npos) continue;
+                label.find(m_filter) == std::string::npos &&
+                track.JointName.find(m_filter) == std::string::npos) continue;
         }
 
         y += DrawTrackHeader(host, track, l, y, dl, track.TargetId == selectedId);

@@ -1,5 +1,6 @@
 #include "anim/Binding.h"
 
+#include "anim/BonePose.h"
 #include "anim/DirectorComponents.h"
 #include "sage/scene/Components.h"
 #include "sage/scene/Scene.h"
@@ -34,7 +35,19 @@ const std::vector<PropertyInfo> kTable = {
     {Property::PostMotionBlur,      "postMotionBlur", "Motion Blur",     1, {"", "", ""},    {kScalar, 0, 0},          false},
     {Property::PostChromatic,       "postChromatic",  "Chromatic Ab.",   1, {"", "", ""},    {kScalar, 0, 0},          false},
     {Property::Visibility,          "visibility",     "Visibility",      1, {"", "", ""},    {kScalar, 0, 0},          true},
+    {Property::BonePosition,        "bonePosition",   "Bone Location",   3, {"X", "Y", "Z"}, {kAxisX, kAxisY, kAxisZ}, false},
+    {Property::BoneRotation,        "boneRotation",   "Bone Rotation",   3, {"X", "Y", "Z"}, {kAxisX, kAxisY, kAxisZ}, false},
+    {Property::BoneScale,           "boneScale",      "Bone Scale",      3, {"X", "Y", "Z"}, {kAxisX, kAxisY, kAxisZ}, false},
 };
+
+// Канал кости для костного свойства.
+BoneChannel ChannelOf(Property prop) {
+    switch (prop) {
+        case Property::BonePosition: return BoneChannel::Translation;
+        case Property::BoneScale:    return BoneChannel::Scale;
+        default:                     return BoneChannel::Rotation;
+    }
+}
 
 // Сущность по id + её entity. Возвращает entt::null, если сущности нет —
 // дорожка могла пережить удаление объекта (проект грузится целиком, а не падает).
@@ -46,6 +59,11 @@ entt::entity Resolve(Scene& scene, int entityId) {
 } // namespace
 
 const std::vector<PropertyInfo>& PropertyTable() { return kTable; }
+
+bool IsBoneProperty(Property prop) {
+    return prop == Property::BonePosition || prop == Property::BoneRotation ||
+           prop == Property::BoneScale;
+}
 
 const PropertyInfo& PropertyInfoOf(Property prop) {
     for (const PropertyInfo& info : kTable) {
@@ -61,10 +79,16 @@ bool PropertyFromKey(const std::string& key, Property& out) {
     return false;
 }
 
-bool PropertyApplies(Scene& scene, int entityId, Property prop) {
+bool PropertyApplies(Scene& scene, int entityId, Property prop, int joint) {
     entt::entity e = Resolve(scene, entityId);
     if (e == entt::null) return false;
     auto& reg = scene.Registry();
+    if (IsBoneProperty(prop)) {
+        // Костная дорожка применима, только если скелет уже известен И такая
+        // кость в нём есть: модель могли переэкспортировать с другим скелетом.
+        const sage::anim::Skeleton* sk = SkeletonOf(scene, entityId);
+        return sk && joint >= 0 && joint < sk->Count();
+    }
     switch (prop) {
         case Property::Position:
         case Property::Rotation:
@@ -89,14 +113,20 @@ bool PropertyApplies(Scene& scene, int entityId, Property prop) {
             return reg.all_of<CameraComponent>(e);
         case Property::Visibility:
             return true; // спрятать можно что угодно
+        case Property::BonePosition:
+        case Property::BoneRotation:
+        case Property::BoneScale:
+            return false; // разобрано выше, до switch
     }
     return false;
 }
 
-bool ReadProperty(Scene& scene, int entityId, Property prop, float* values) {
+bool ReadProperty(Scene& scene, int entityId, Property prop, float* values, int joint) {
     entt::entity e = Resolve(scene, entityId);
     if (e == entt::null || !values) return false;
     auto& reg = scene.Registry();
+
+    if (IsBoneProperty(prop)) return ReadBoneChannel(scene, entityId, joint, ChannelOf(prop), values);
 
     switch (prop) {
         case Property::Position:
@@ -171,10 +201,12 @@ bool ReadProperty(Scene& scene, int entityId, Property prop, float* values) {
     return false;
 }
 
-bool WriteProperty(Scene& scene, int entityId, Property prop, const float* values) {
+bool WriteProperty(Scene& scene, int entityId, Property prop, const float* values, int joint) {
     entt::entity e = Resolve(scene, entityId);
     if (e == entt::null || !values) return false;
     auto& reg = scene.Registry();
+
+    if (IsBoneProperty(prop)) return WriteBoneChannel(scene, entityId, joint, ChannelOf(prop), values);
 
     switch (prop) {
         case Property::Position:
@@ -251,6 +283,9 @@ std::vector<Property> ApplicableProperties(Scene& scene, int entityId) {
     std::vector<Property> out;
     out.reserve(kTable.size());
     for (const PropertyInfo& info : kTable) {
+        // Костные свойства выбираются не здесь: у них своё меню под скелетом,
+        // где заодно выбирается кость. В списке свойств объекта им не место.
+        if (IsBoneProperty(info.Id)) continue;
         if (PropertyApplies(scene, entityId, info.Id)) out.push_back(info.Id);
     }
     return out;
