@@ -106,6 +106,9 @@ public:
 private:
     void DrawScene(Scene& scene, const LightingEnvironment& env, const glm::mat4& view,
                    const glm::mat4& proj, const glm::vec3& viewPos, ShadingMode shading);
+    // Небо кадра: кубическая текстура из каталога сцены, если он задан, иначе
+    // процедурный градиент. Одна точка на вьюпорт, Render View и экспорт.
+    void DrawSky(const LightingEnvironment& env, const glm::mat4& view, const glm::mat4& proj);
     // Общая отрисовка чистового кадра (превью и экспорт идут через неё).
     bool DrawCameraFrame(Scene& scene, const LightingEnvironment& env,
                          const CameraFrameInfo& frame, Framebuffer& target);

@@ -10,6 +10,7 @@
 #include "sage/core/Application.h"
 #include "sage/ecs/CameraView.h"
 #include "sage/ecs/LightSystem.h"
+#include "sage/render/ResourceManager.h"
 #include "sage/rhi/GraphicsDevice.h"
 #include "sage/scene/Components.h"
 
@@ -206,6 +207,20 @@ void StageRenderer::SetRenderViewSize(int w, int h) {
 //  Проходы
 // ============================================================================
 
+void StageRenderer::DrawSky(const LightingEnvironment& env, const glm::mat4& view,
+                            const glm::mat4& proj) {
+    if (!env.Skybox.Enabled) return;
+    if (env.Skybox.HasCubemap()) {
+        if (std::shared_ptr<Skybox> sky = ResourceManager::Instance().GetSkybox(env.Skybox.CubemapDir)) {
+            sky->Draw(view, proj, env.Skybox.Intensity, env.Skybox.RotationDeg);
+            return;
+        }
+        // Каталог указан, но не читается — остаёмся на градиенте, чтобы кадр
+        // не оказался пустым. Причина уже записана в лог.
+    }
+    m_sky->Draw(view, proj, env.Skybox.TopColor, env.Skybox.HorizonColor);
+}
+
 void StageRenderer::RenderShadow(Scene& scene, const LightingEnvironment& env) {
     Window& window = sage::Application::Get().GetWindow();
     HiddenObjects hidden(scene); // спрятанное не отбрасывает тень
@@ -384,7 +399,7 @@ void StageRenderer::RenderStage(Scene& scene, Camera& camera, const LightingEnvi
     device.SetClearColor(0.106f, 0.114f, 0.133f, 1.0f);
     device.Clear();
 
-    if (env.Skybox.Enabled) m_sky->Draw(outView, outProj, env.Skybox.TopColor, env.Skybox.HorizonColor);
+    DrawSky(env, outView, outProj);
     DrawScene(scene, env, outView, outProj, viewPos, shading);
 
     // Служебная графика — в тот же буфер с тестом глубины, чтобы объекты
@@ -427,8 +442,7 @@ bool StageRenderer::DrawCameraFrame(Scene& scene, const LightingEnvironment& env
     device.SetClearColor(env.SkyColor.r * 0.85f, env.SkyColor.g * 0.85f, env.SkyColor.b * 0.85f, 1.0f);
     device.Clear();
 
-    if (env.Skybox.Enabled)
-        m_sky->Draw(frame.View, frame.Proj, env.Skybox.TopColor, env.Skybox.HorizonColor);
+    DrawSky(env, frame.View, frame.Proj);
     // Чистовой кадр — всегда полное затенение и без служебной графики.
     DrawScene(scene, env, frame.View, frame.Proj, frame.Position, ShadingMode::Shaded);
     return true;

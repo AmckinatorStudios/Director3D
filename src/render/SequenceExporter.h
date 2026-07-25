@@ -1,8 +1,10 @@
 #pragma once
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "anim/AnimationDocument.h"
+#include "render/VideoWriter.h"
 #include "sage/render/Framebuffer.h"
 
 class Scene;
@@ -14,10 +16,12 @@ class StageRenderer;
 // ---------------------------------------------------------------------------
 // SequenceExporter — вывод готового ролика в файлы.
 //
-// Пишет секвенцию PNG (кадр = файл вида name_0001.png) — универсальный формат,
-// который принимает любой монтажный пакет и любой сборщик видео (ffmpeg). Свой
-// видеокодек инструмент не тащит: это отдельная большая зависимость, а секвенция
-// не теряет качество и позволяет пересобрать ролик с любым битрейтом.
+// Два формата вывода:
+//   • MP4 (H.264) — готовый ролик, который можно сразу смотреть и отправлять.
+//     Кадры уходят кодировщику потоком, без промежуточных файлов (см.
+//     VideoWriter); при наличии звуковой дорожки она подмешивается в тот же файл;
+//   • секвенция PNG — кадр в файл вида name_00001.png. Без потерь, принимается
+//     любым монтажным пакетом, и работает там, где нет ffmpeg.
 //
 // Экспорт идёт ПО КАДРАМ и синхронно, кадр за кадром: для каждого номера кадра
 // время ставится точно (time = frame / fps), документ применяется в режиме
@@ -31,9 +35,19 @@ class StageRenderer;
 // ---------------------------------------------------------------------------
 class SequenceExporter {
 public:
+    // Куда пишем результат.
+    enum class Format {
+        Mp4,          // готовый ролик H.264 (нужен ffmpeg)
+        PngSequence,  // кадр = файл, работает всегда
+    };
+
     struct Settings {
+        Format OutputFormat = Format::Mp4;
         std::string OutputDir = "render";
         std::string BaseName = "frame";
+        // Качество H.264 (CRF): 18 — визуально без потерь, 23 — обычное.
+        int Quality = 18;
+        bool IncludeAudio = true; // подмешать звуковую дорожку проекта в MP4
         int Width = 1920;
         int Height = 1080;
         float StartTime = 0.0f;
@@ -61,6 +75,8 @@ public:
     int TotalFrames() const { return m_total; }
     float Progress() const { return m_total > 0 ? (float)m_current / (float)m_total : 0.0f; }
     const std::string& OutputDir() const { return m_settings.OutputDir; }
+    // Человекочитаемый путь результата — то, что показывается в статус-баре.
+    const std::string& ResultPath() const { return m_resultPath; }
 
 private:
     Settings m_settings;
@@ -68,6 +84,11 @@ private:
     // окончании: пересоздавать текстуры на каждый кадр — сотни лишних
     // аллокаций в GPU-памяти подряд, держать вечно — занятая VRAM без дела.
     std::optional<Framebuffer> m_target;
+    // Кодировщик и буфер чтения кадра. Буфер переиспользуется: выделять
+    // мегабайты на каждый кадр — это заметная нагрузка на аллокатор.
+    VideoWriter m_video;
+    std::vector<unsigned char> m_frameBuffer;
+    std::string m_resultPath;
     bool m_active = false;
     bool m_failed = false;
     std::string m_error;

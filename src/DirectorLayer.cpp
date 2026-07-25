@@ -4,6 +4,7 @@
 #include <cmath>
 #include <chrono>
 #include <cstdlib>
+#include <cstring>
 
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -15,6 +16,7 @@
 
 #include "anim/DirectorComponents.h"
 #include "project/Project.h"
+#include "render/VideoWriter.h"
 #include "sage/anim/AnimationSystem.h"
 #include "sage/audio/AudioEngine.h"
 #include "sage/core/Application.h"
@@ -64,7 +66,8 @@ float RayBox(const glm::vec3& ro, const glm::vec3& rd, const glm::vec3& bmin, co
 
 } // namespace
 
-DirectorLayer::DirectorLayer() : sage::Layer("Director3D") {}
+DirectorLayer::DirectorLayer(std::string startupProject)
+    : sage::Layer("Director3D"), m_startupProject(std::move(startupProject)) {}
 DirectorLayer::~DirectorLayer() = default;
 
 // ============================================================================
@@ -112,6 +115,19 @@ void DirectorLayer::OnAttach() {
         LOG_INFO("Director") << "Автоскриншот на кадре " << m_autoScreenshotFrame
                              << " -> " << m_autoScreenshotPath;
     }
+    // Проект из командной строки открываем ПОСЛЕ стартовой сцены: она уже
+    // построена, и неудачное открытие оставляет пользователя в рабочем
+    // состоянии, а не в пустоте.
+    if (!m_startupProject.empty()) {
+        std::string err;
+        if (OpenProject(m_startupProject, err)) {
+            SetStatus("Проект открыт: " + m_startupProject);
+        } else {
+            LOG_ERROR("Director") << "Не удалось открыть " << m_startupProject << ": " << err;
+            SetStatus("Не удалось открыть проект: " + err);
+        }
+    }
+
     if (std::getenv("D3D_ADVANCED")) m_simpleMode = false;
     if (const char* tab = std::getenv("D3D_TIMELINE_TAB")) m_timeline.SetTab(std::atoi(tab));
     if (std::getenv("D3D_DEMO")) BuildDemoAnimation();
@@ -286,29 +302,63 @@ void DirectorLayer::StartSmokeTest() {
     m_renderSettings.Width = 320;
     m_renderSettings.Height = 180;
     m_renderSettings.StartTime = 0.0f;
-    m_renderSettings.EndTime = 2.0f / m_doc.Fps; // три кадра: 0, 1, 2
+    // Полсекунды: кодировщику нужно больше одного кадра, чтобы проявились
+    // ошибки размера и порядка строк, но ролик всё равно рендерится мгновенно.
+    m_renderSettings.EndTime = 11.0f / m_doc.Fps; // двенадцать кадров: 0…11
     m_renderSettings.OutputDir = "smoke_render";
     m_renderSettings.BaseName = "smoke";
+
+    // Проверяем ровно тот путь вывода, которым программа пользуется по
+    // умолчанию, — то есть MP4. Там, где кодировщика нет (часть CI-раннеров),
+    // откатываемся на секвенцию: без этого проверка падала бы не из-за нашего
+    // кода. Переменная позволяет прогнать оба пути вручную.
+    const char* format = std::getenv("D3D_SMOKE_FORMAT");
+    const bool wantMp4 = format ? std::strcmp(format, "mp4") == 0 : VideoWriter::FfmpegAvailable();
+    m_renderSettings.OutputFormat = wantMp4 ? SequenceExporter::Format::Mp4
+                                            : SequenceExporter::Format::PngSequence;
+    m_renderSettings.IncludeAudio = false; // в демо-проекте звуковой дорожки нет
     StartRender();
+
+    // Если рендер не запустился, ждать его завершения бессмысленно: без этой
+    // проверки проверка не падала, а висела до таймаута CI — и причина
+    // («не нашёлся кодировщик») терялась в общем логе.
+    if (!m_exporter.Active()) {
+        LOG_ERROR("Smoke") << "Сквозная проверка ПРОВАЛЕНА: рендер не запустился — " << m_status;
+        m_smokeTest = false;
+        sage::Application::Get().Close();
+    }
 }
 
 void DirectorLayer::FinishSmokeTest() {
+    const bool mp4 = m_renderSettings.OutputFormat == SequenceExporter::Format::Mp4;
+    const int expected = m_exporter.TotalFrames();
     int found = 0;
     std::error_code ec;
-    if (fs::is_directory(m_renderSettings.OutputDir, ec)) {
+
+    if (mp4) {
+        // У ролика проверяем не «файл есть», а «файл не пуст»: оборванный
+        // кодировщик оставляет нулевой файл, который выглядит как результат.
+        const uintmax_t size = fs::file_size(m_exporter.ResultPath(), ec);
+        if (!ec && size > 0) {
+            found = expected;
+            LOG_INFO("Smoke") << "Ролик записан: " << m_exporter.ResultPath() << " (" << size
+                              << " байт)";
+        }
+    } else if (fs::is_directory(m_renderSettings.OutputDir, ec)) {
         for (const fs::directory_entry& entry : fs::directory_iterator(m_renderSettings.OutputDir, ec)) {
             // Пустой файл — это не отрендеренный кадр, а следы падения на
             // середине записи, поэтому проверяем и размер.
             if (entry.path().extension() == ".png" && entry.file_size(ec) > 0) ++found;
         }
     }
-    const int expected = m_exporter.TotalFrames();
+
     if (found >= expected && !m_exporter.Failed()) {
-        LOG_INFO("Smoke") << "Сквозная проверка пройдена: кадров записано " << found
-                          << " из " << expected << ", дорожек " << m_doc.Tracks.size();
+        LOG_INFO("Smoke") << "Сквозная проверка пройдена (" << (mp4 ? "MP4" : "PNG")
+                          << "): кадров записано " << found << " из " << expected << ", дорожек "
+                          << m_doc.Tracks.size();
     } else {
-        LOG_ERROR("Smoke") << "Сквозная проверка ПРОВАЛЕНА: кадров " << found
-                           << " из " << expected
+        LOG_ERROR("Smoke") << "Сквозная проверка ПРОВАЛЕНА (" << (mp4 ? "MP4" : "PNG")
+                           << "): кадров " << found << " из " << expected
                            << (m_exporter.Failed() ? (", ошибка: " + m_exporter.Error()) : "");
     }
     // Скриншот интерфейса с наполненным таймлайном снимаем ПОСЛЕ рендера —
@@ -332,7 +382,7 @@ void DirectorLayer::OnUpdate(float dt) {
     if (m_exporter.Active()) {
         if (!m_exporter.Step(*m_scene, m_renderer, m_doc)) {
             if (m_exporter.Failed()) SetStatus("Рендер прерван: " + m_exporter.Error());
-            else SetStatus("Рендер завершён: " + m_exporter.OutputDir());
+            else SetStatus("Рендер завершён: " + m_exporter.ResultPath());
             m_playback.SetTime(m_timeBeforeRender, m_doc.Duration);
             ApplyDocument(true);
             if (m_smokeTest) FinishSmokeTest();
@@ -469,6 +519,7 @@ void DirectorLayer::DrawUI() {
     m_stage.DrawViewport(*this);
     m_stage.DrawRenderView(*this);
     m_properties.Draw(*this);
+    m_world.Draw(*this);
 
     // Транспорт живёт в собственном окне под вьюпортом — так он остаётся на
     // виду, даже если таймлайн свернули или вытащили в отдельное окно.
@@ -528,6 +579,7 @@ void DirectorLayer::BuildDockLayout(unsigned int dockspaceId) {
     ImGui::DockBuilderDockWindow("Viewport", center);
     ImGui::DockBuilderDockWindow("Render View", center);
     ImGui::DockBuilderDockWindow("Properties", right);
+    ImGui::DockBuilderDockWindow("World", right);
     ImGui::DockBuilderDockWindow("Transport", transport);
     ImGui::DockBuilderDockWindow("Timeline", timelineNode);
     ImGui::DockBuilderFinish(dockspaceId);

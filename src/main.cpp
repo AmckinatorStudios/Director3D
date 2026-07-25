@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <string>
 
 #include "sage/core/GameModule.h"
 #include "sage/core/Log.h"
@@ -29,6 +30,17 @@ sage::Application* sage::CreateApplication(int argc, char** argv) {
         if (std::strcmp(argv[i], "--self-test") == 0) {
             Log::Init("director3d_selftest.log");
             std::exit(d3d::RunSelfTest());
+        }
+    }
+
+    // Первый аргумент без дефиса — проект, который надо открыть при запуске.
+    // Так работает открытие двойным щелчком по .d3dproj и «Открыть с помощью»
+    // в проводнике; без этого файл проекта нельзя открыть иначе как из меню.
+    std::string startupProject;
+    for (int i = 1; i < argc; ++i) {
+        if (argv[i][0] != '-') {
+            startupProject = argv[i];
+            break;
         }
     }
 
@@ -50,7 +62,7 @@ sage::Application* sage::CreateApplication(int argc, char** argv) {
     config.Msaa = 0;
 
     auto* app = new sage::Application(config);
-    app->PushLayer(std::make_unique<d3d::DirectorLayer>());
+    app->PushLayer(std::make_unique<d3d::DirectorLayer>(startupProject));
     return app;
 }
 

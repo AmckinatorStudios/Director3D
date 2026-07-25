@@ -8,6 +8,7 @@
 #include "imgui_stdlib.h"
 
 #include "project/Project.h"
+#include "render/VideoWriter.h"
 #include "sage/core/Version.h"
 #include "ui/Icons.h"
 #include "ui/Theme.h"
@@ -306,6 +307,41 @@ void DialogsPanel::DrawRenderSettings(DirectorHost& host) {
     SequenceExporter::Settings& settings = host.RenderSettings();
     const AnimationDocument& doc = host.Document();
 
+    // --- Формат вывода ---
+    // Он первый, потому что от него зависит смысл остальных полей: у MP4 «имя
+    // файлов» — это имя одного ролика, у секвенции — префикс сотен PNG.
+    const bool ffmpeg = VideoWriter::FfmpegAvailable();
+    ImGui::TextUnformatted("Формат вывода");
+    bool mp4 = settings.OutputFormat == SequenceExporter::Format::Mp4;
+    if (ImGui::RadioButton("Видео MP4 (H.264)", mp4)) {
+        settings.OutputFormat = SequenceExporter::Format::Mp4;
+        mp4 = true;
+    }
+    ImGui::SameLine(0.0f, 18.0f);
+    if (ImGui::RadioButton("Секвенция PNG", !mp4)) {
+        settings.OutputFormat = SequenceExporter::Format::PngSequence;
+        mp4 = false;
+    }
+
+    if (mp4 && !ffmpeg) {
+        // Не запрещаем выбор — просто честно говорим, почему рендер не пойдёт и
+        // что с этим делать. Иначе пользователь упрётся в ошибку уже после
+        // нажатия «Рендерить».
+        ImGui::PushStyleColor(ImGuiCol_Text, Theme::Colors::Record);
+        ImGui::TextWrapped("ffmpeg не найден — MP4 записать нечем.");
+        ImGui::PopStyleColor();
+        ImGui::TextDisabled("Ubuntu/Debian: sudo apt install ffmpeg · macOS: brew install ffmpeg · "
+                            "Windows: winget install ffmpeg");
+        ImGui::TextDisabled("Либо выберите секвенцию PNG — она работает без ffmpeg.");
+    } else if (mp4) {
+        ImGui::PushStyleColor(ImGuiCol_Text, Theme::Colors::Good);
+        ImGui::TextWrapped("%s", VideoWriter::FfmpegVersion().c_str());
+        ImGui::PopStyleColor();
+    } else {
+        ImGui::TextDisabled("Кадр = отдельный файл PNG без потерь: принимается любым монтажом.");
+    }
+
+    ImGui::Spacing();
     ImGui::TextUnformatted("Разрешение кадра");
     ImGui::SetNextItemWidth(120.0f);
     ImGui::DragInt("##w", &settings.Width, 1.0f, 16, 7680, "%d px");
@@ -322,6 +358,48 @@ void DialogsPanel::DrawRenderSettings(DirectorHost& host) {
     ImGui::SameLine();
     if (ImGui::SmallButton("4K")) { settings.Width = 3840; settings.Height = 2160; }
 
+    // H.264 в yuv420p не кодирует нечётные стороны. Предупреждаем и чиним одной
+    // кнопкой, а не роняем рендер посреди ролика.
+    const bool oddSize = (settings.Width % 2 != 0) || (settings.Height % 2 != 0);
+    if (mp4 && oddSize) {
+        ImGui::PushStyleColor(ImGuiCol_Text, Theme::Colors::Warning);
+        ImGui::TextWrapped("H.264 требует чётных сторон кадра.");
+        ImGui::PopStyleColor();
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Исправить")) {
+            settings.Width &= ~1;
+            settings.Height &= ~1;
+        }
+    }
+
+    if (mp4) {
+        ImGui::Spacing();
+        ImGui::SetNextItemWidth(220.0f);
+        // CRF: меньше — лучше картинка и больше файл. Диапазон сознательно
+        // сужен до вменяемого: ниже 14 растёт только размер, выше 28 — заметные
+        // артефакты на градиентах неба и в размытии.
+        ImGui::SliderInt("Качество (CRF)", &settings.Quality, 14, 28);
+        const char* hint = settings.Quality <= 17   ? "почти без потерь, файл крупный"
+                           : settings.Quality <= 20 ? "мастер-качество для монтажа"
+                           : settings.Quality <= 23 ? "обычное качество для показа"
+                                                    : "лёгкий файл, видны артефакты";
+        ImGui::SameLine();
+        ImGui::TextDisabled("— %s", hint);
+
+        const bool hasAudio = doc.Audio.Loaded();
+        ImGui::BeginDisabled(!hasAudio);
+        bool includeAudio = settings.IncludeAudio && hasAudio;
+        if (ImGui::Checkbox("Вшить звуковую дорожку", &includeAudio)) settings.IncludeAudio = includeAudio;
+        ImGui::EndDisabled();
+        if (!hasAudio) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("(звук в проект не загружен)");
+        } else if (doc.Audio.Muted) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("(дорожка заглушена — в ролик не попадёт)");
+        }
+    }
+
     ImGui::Spacing();
     ImGui::TextUnformatted("Диапазон");
     ImGui::SetNextItemWidth(150.0f);
@@ -337,7 +415,7 @@ void DialogsPanel::DrawRenderSettings(DirectorHost& host) {
     if (ImGui::InputText("##outdir", m_renderDir, sizeof(m_renderDir))) settings.OutputDir = m_renderDir;
 
     std::snprintf(m_renderName, sizeof(m_renderName), "%s", settings.BaseName.c_str());
-    ImGui::TextUnformatted("Имя файлов");
+    ImGui::TextUnformatted(mp4 ? "Имя ролика" : "Имя файлов");
     ImGui::SetNextItemWidth(-1.0f);
     if (ImGui::InputText("##outname", m_renderName, sizeof(m_renderName))) settings.BaseName = m_renderName;
 
@@ -351,14 +429,25 @@ void DialogsPanel::DrawRenderSettings(DirectorHost& host) {
     ImGui::Spacing();
     const float end = settings.EndTime > settings.StartTime ? settings.EndTime : doc.Duration;
     const int frames = (int)((end - settings.StartTime) * doc.Fps) + 1;
-    ImGui::TextDisabled("Будет записано примерно %d кадр(ов) в %s_00000.png …",
-                        frames > 0 ? frames : 0, settings.BaseName.c_str());
+    if (mp4) {
+        ImGui::TextDisabled("Будет записано примерно %d кадр(ов) (%.1f c) в %s/%s.mp4",
+                            frames > 0 ? frames : 0,
+                            (double)(frames > 0 ? frames : 0) / (double)(doc.Fps > 0.0f ? doc.Fps : 24.0f),
+                            settings.OutputDir.c_str(), settings.BaseName.c_str());
+    } else {
+        ImGui::TextDisabled("Будет записано примерно %d кадр(ов) в %s_00000.png …",
+                            frames > 0 ? frames : 0, settings.BaseName.c_str());
+    }
 
     ImGui::Separator();
+    // Рендер в MP4 без кодировщика заведомо провалится — кнопку гасим, причина
+    // уже написана выше.
+    ImGui::BeginDisabled(mp4 && !ffmpeg);
     if (ImGui::Button("Рендерить", ImVec2(140.0f, 0.0f))) {
         host.StartRender();
         Close();
     }
+    ImGui::EndDisabled();
     ImGui::SameLine();
     if (ImGui::Button("Закрыть", ImVec2(120.0f, 0.0f))) Close();
     ImGui::EndPopup();

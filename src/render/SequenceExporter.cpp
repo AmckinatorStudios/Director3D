@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 
 #include "render/StageRenderer.h"
@@ -10,6 +11,7 @@
 #include "sage/core/Application.h"
 #include "sage/core/Log.h"
 #include "sage/render/Screenshot.h"
+#include "sage/rhi/GraphicsDevice.h"
 #include "sage/scene/Scene.h"
 
 namespace fs = std::filesystem;
@@ -22,13 +24,14 @@ bool SequenceExporter::Begin(const Settings& settings, const AnimationDocument& 
     m_failed = false;
     m_error.clear();
     m_active = false;
+    m_resultPath.clear();
 
     if (m_settings.Width < 16 || m_settings.Height < 16) {
         err = "слишком маленькое разрешение кадра";
         return false;
     }
-    // Проверяем камеру ДО создания каталога: иначе после отказа оставался бы
-    // пустой каталог рендера.
+    // Проверяем камеру ДО создания каталога и запуска кодировщика: иначе после
+    // отказа оставался бы пустой каталог рендера и повисший процесс.
     StageRenderer::CameraFrameInfo frame = StageRenderer::CameraFrameOf(
         scene, m_settings.CameraId, (float)m_settings.Width / (float)m_settings.Height);
     if (!frame.HasCamera) {
@@ -49,11 +52,30 @@ bool SequenceExporter::Begin(const Settings& settings, const AnimationDocument& 
     const int lastFrame = (int)std::lround(end * m_fps);
     m_total = std::max(lastFrame - m_firstFrame + 1, 1);
     m_current = 0;
-    m_active = true;
 
-    LOG_INFO("Export") << "Экспорт секвенции: " << m_total << " кадр(ов) "
-                       << m_settings.Width << "x" << m_settings.Height
-                       << " -> " << m_settings.OutputDir;
+    if (m_settings.OutputFormat == Format::Mp4) {
+        VideoWriter::Settings video;
+        video.OutputPath = (fs::path(m_settings.OutputDir) / (m_settings.BaseName + ".mp4")).string();
+        video.Width = m_settings.Width;
+        video.Height = m_settings.Height;
+        video.Fps = m_fps;
+        video.Quality = m_settings.Quality;
+        video.StartTime = (float)m_firstFrame / m_fps;
+        if (m_settings.IncludeAudio && doc.Audio.Loaded() && !doc.Audio.Muted) {
+            video.AudioPath = doc.Audio.Path();
+            video.AudioOffset = doc.Audio.Offset;
+        }
+        if (!m_video.Begin(video, err)) return false;
+        m_resultPath = video.OutputPath;
+        // Буфер под один кадр в RGB — переиспользуется до конца экспорта.
+        m_frameBuffer.assign((size_t)m_settings.Width * m_settings.Height * 3u, 0);
+    } else {
+        m_resultPath = m_settings.OutputDir;
+    }
+
+    m_active = true;
+    LOG_INFO("Export") << "Экспорт: " << m_total << " кадр(ов) " << m_settings.Width << "x"
+                       << m_settings.Height << " -> " << m_resultPath;
     return true;
 }
 
@@ -63,6 +85,15 @@ bool SequenceExporter::Step(Scene& scene, StageRenderer& renderer, AnimationDocu
     if (!m_target || m_target->Width() != m_settings.Width || m_target->Height() != m_settings.Height) {
         m_target.emplace(m_settings.Width, m_settings.Height);
     }
+
+    auto fail = [&](const std::string& reason) {
+        m_failed = true;
+        m_error = reason;
+        m_active = false;
+        m_video.Cancel();
+        m_target.reset();
+        return false;
+    };
 
     const int batch = std::max(m_settings.FramesPerStep, 1);
     for (int i = 0; i < batch && m_current < m_total; ++i) {
@@ -78,20 +109,33 @@ bool SequenceExporter::Step(Scene& scene, StageRenderer& renderer, AnimationDocu
         LightingEnvironment env = CollectVisibleLighting(scene);
         renderer.RenderShadow(scene, env);
         if (!renderer.RenderToTarget(scene, env, m_settings.CameraId, *m_target)) {
-            m_failed = true;
-            m_error = "камера пропала посреди экспорта";
-            m_active = false;
-            m_target.reset();
-            return false;
+            return fail("камера пропала посреди экспорта");
         }
 
         // Читаем ИМЕННО из буфера рендера, а не из экрана: разрешение экспорта
         // не связано с размером окна, и панели инструмента в кадр не попадают.
         m_target->Bind();
-        char name[64];
-        std::snprintf(name, sizeof(name), "%s_%05d.png", m_settings.BaseName.c_str(), frame);
-        const fs::path out = fs::path(m_settings.OutputDir) / name;
-        SaveScreenshot(out.string(), m_settings.Width, m_settings.Height);
+        if (m_settings.OutputFormat == Format::Mp4) {
+            sage::rhi::GraphicsDevice::Get().ReadPixelsRGB(0, 0, m_settings.Width, m_settings.Height,
+                                                           m_frameBuffer.data());
+            // GPU отдаёт строки снизу вверх, а кодировщик ждёт сверху вниз.
+            // Переворачиваем на месте, меняя строки местами.
+            const size_t stride = (size_t)m_settings.Width * 3u;
+            for (int y = 0; y < m_settings.Height / 2; ++y) {
+                unsigned char* top = m_frameBuffer.data() + (size_t)y * stride;
+                unsigned char* bottom = m_frameBuffer.data() +
+                                        (size_t)(m_settings.Height - 1 - y) * stride;
+                std::swap_ranges(top, top + stride, bottom);
+            }
+            if (!m_video.WriteFrame(m_frameBuffer.data())) {
+                return fail("кодировщик оборвал приём кадров — проверьте вывод ffmpeg в логе");
+            }
+        } else {
+            char name[64];
+            std::snprintf(name, sizeof(name), "%s_%05d.png", m_settings.BaseName.c_str(), frame);
+            const fs::path out = fs::path(m_settings.OutputDir) / name;
+            SaveScreenshot(out.string(), m_settings.Width, m_settings.Height);
+        }
 
         ++m_current;
     }
@@ -101,7 +145,15 @@ bool SequenceExporter::Step(Scene& scene, StageRenderer& renderer, AnimationDocu
     if (m_current >= m_total) {
         m_active = false;
         m_target.reset(); // экспорт закончен — VRAM под кадр больше не нужна
-        LOG_INFO("Export") << "Экспорт завершён: " << m_total << " кадр(ов) в " << m_settings.OutputDir;
+        if (m_settings.OutputFormat == Format::Mp4) {
+            std::string err;
+            if (!m_video.Finish(err)) {
+                m_failed = true;
+                m_error = err;
+                return false;
+            }
+        }
+        LOG_INFO("Export") << "Экспорт завершён: " << m_total << " кадр(ов) в " << m_resultPath;
         return false;
     }
     return true;
@@ -110,6 +162,7 @@ bool SequenceExporter::Step(Scene& scene, StageRenderer& renderer, AnimationDocu
 void SequenceExporter::Cancel() {
     if (!m_active) return;
     m_active = false;
+    m_video.Cancel();
     m_target.reset();
     LOG_INFO("Export") << "Экспорт прерван на кадре " << m_current << " из " << m_total;
 }

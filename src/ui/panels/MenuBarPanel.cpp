@@ -96,6 +96,8 @@ void MenuBarPanel::Draw(DirectorHost& host) {
         ImGui::MenuItem("Selection Outline", nullptr, &ov.Outline);
         ImGui::Separator();
         if (ImGui::MenuItem("Frame Selected", "F", false, hasSelection)) host.FocusOnSelected();
+        ImGui::Separator();
+        ImGui::TextDisabled("Небо, солнце и туман — в панели World");
         ImGui::EndMenu();
     }
 

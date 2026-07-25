@@ -91,6 +91,7 @@ add_executable(Director3D
     src/project/Project.cpp
     src/render/StageRenderer.cpp
     src/render/SequenceExporter.cpp
+    src/render/VideoWriter.cpp
     src/ui/Theme.cpp
     src/ui/Icons.cpp
     src/ui/panels/MenuBarPanel.cpp
@@ -100,6 +101,7 @@ add_executable(Director3D
     src/ui/panels/StagePanel.cpp
     src/ui/panels/TimelinePanel.cpp
     src/ui/panels/PropertiesPanel.cpp
+    src/ui/panels/WorldPanel.cpp
     src/ui/panels/StatusBarPanel.cpp
     src/ui/panels/DialogsPanel.cpp
     src/SelfTest.cpp

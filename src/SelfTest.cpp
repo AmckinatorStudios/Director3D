@@ -13,6 +13,7 @@
 #include "anim/Playback.h"
 #include "project/Project.h"
 #include "project/UndoStack.h"
+#include "render/VideoWriter.h"
 #include "sage/scene/Components.h"
 #include "sage/scene/Scene.h"
 
@@ -497,6 +498,68 @@ void TestAudioDecoding() {
     Check(!AudioTrack::DecodeWav(truncated, mono, rate), "обрезанный заголовок отвергается");
 }
 
+// ---------------------------------------------------------------------------
+// Команда кодировщика. Сам ffmpeg в самотесте не запускается (его может не быть
+// на машине сборки), но команда — это то, что ломается тише всего: перепутанный
+// порядок опций или неэкранированный путь дают либо мусорный ролик, либо
+// выполнение чужой команды. Поэтому строку проверяем целиком.
+// ---------------------------------------------------------------------------
+void TestVideoCommand() {
+    std::printf("\n[Кодировщик видео]\n");
+
+    VideoWriter::Settings s;
+    s.OutputPath = "render/shot.mp4";
+    s.Width = 1920;
+    s.Height = 1080;
+    s.Fps = 24.0f;
+    s.Quality = 18;
+
+    const std::string cmd = VideoWriter::BuildCommand(s);
+    Check(cmd.find("-f rawvideo") != std::string::npos, "вход объявлен сырым видео");
+    Check(cmd.find("-pixel_format rgb24") != std::string::npos, "формат пикселей — rgb24");
+    Check(cmd.find("-video_size 1920x1080") != std::string::npos, "размер кадра передан");
+    Check(cmd.find("-i -") != std::string::npos, "кадры читаются из stdin");
+    Check(cmd.find("-c:v libx264") != std::string::npos, "видео кодируется H.264");
+    Check(cmd.find("-crf 18") != std::string::npos, "качество передано как CRF");
+    Check(cmd.find("-pix_fmt yuv420p") != std::string::npos, "выход в yuv420p — иначе не откроют плееры");
+    Check(cmd.find("+faststart") != std::string::npos, "moov в начало файла");
+    Check(cmd.find("-c:a") == std::string::npos, "без звуковой дорожки аудио не кодируется");
+
+    // Опции входа обязаны стоять ДО своего -i, иначе ffmpeg отнесёт их к выходу
+    // и прочитает поток кадров как попало.
+    Check(cmd.find("-video_size") < cmd.find("-i -"), "опции входа идут перед -i");
+    Check(cmd.find("-c:v libx264") > cmd.find("-i -"), "опции кодирования идут после входа");
+
+    // Путь с пробелом и кавычкой не должен ни рвать команду, ни дописывать к ней
+    // свою: он обязан целиком остаться одним аргументом.
+    VideoWriter::Settings tricky = s;
+    tricky.OutputPath = "/tmp/my render/a'b; rm -rf x.mp4";
+    const std::string quoted = VideoWriter::BuildCommand(tricky);
+    Check(quoted.find("; rm -rf x") == std::string::npos ||
+              quoted.find("'\\''") != std::string::npos,
+          "опасный путь экранирован, а не подставлен как есть");
+    Check(quoted.find("rm -rf x.mp4'") != std::string::npos ||
+              quoted.find("rm -rf x.mp4\"") != std::string::npos,
+          "путь закрыт кавычкой целиком");
+
+    // Звук: смещение дорожки и старт не с нуля должны давать -ss и aac.
+    VideoWriter::Settings withAudio = s;
+    withAudio.AudioPath = "music.wav";
+    withAudio.StartTime = 2.0f;
+    withAudio.AudioOffset = 0.5f;
+    const std::string audio = VideoWriter::BuildCommand(withAudio);
+    Check(audio.find("-c:a aac") != std::string::npos, "звук кодируется в AAC");
+    Check(audio.find("-shortest") != std::string::npos, "ролик кончается вместе с картинкой");
+    Check(audio.find("-ss 1.5") != std::string::npos, "звук подрезан с учётом смещения дорожки");
+    Check(audio.find("-ss") < audio.find("music.wav"), "-ss стоит перед своим входом");
+
+    // Рендер не с нуля без звука не должен добавлять -ss: подрезать нечего.
+    VideoWriter::Settings noAudioOffset = s;
+    noAudioOffset.StartTime = 3.0f;
+    Check(VideoWriter::BuildCommand(noAudioOffset).find("-ss") == std::string::npos,
+          "без звука подрезка не добавляется");
+}
+
 } // namespace
 
 int RunSelfTest() {
@@ -509,6 +572,7 @@ int RunSelfTest() {
     TestUndo();
     TestProjectIO();
     TestAudioDecoding();
+    TestVideoCommand();
 
     std::printf("\n=====================================\n");
     std::printf("Пройдено: %d, провалено: %d\n", g_passed, g_failed);

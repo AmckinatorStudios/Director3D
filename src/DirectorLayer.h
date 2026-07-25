@@ -23,6 +23,7 @@
 #include "ui/panels/StatusBarPanel.h"
 #include "ui/panels/TimelinePanel.h"
 #include "ui/panels/ToolbarPanel.h"
+#include "ui/panels/WorldPanel.h"
 
 namespace d3d {
 
@@ -40,7 +41,9 @@ namespace d3d {
 // ---------------------------------------------------------------------------
 class DirectorLayer : public sage::Layer, public DirectorHost {
 public:
-    DirectorLayer();
+    // startupProject — файл .d3dproj, который надо открыть сразу после запуска
+    // (путь из командной строки). Пусто — стартуем с новой сцены.
+    explicit DirectorLayer(std::string startupProject = {});
     ~DirectorLayer() override;
 
     // --- Слой движка ---
@@ -200,6 +203,8 @@ private:
     std::filesystem::path m_assetsDir;
     std::filesystem::path m_selectedAsset;
     std::string m_status;
+    // Проект из командной строки: открывается один раз в OnAttach.
+    std::string m_startupProject;
     float m_statusTimer = 0.0f;
 
     // --- Панели ---
@@ -210,6 +215,7 @@ private:
     StagePanel m_stage;
     TimelinePanel m_timeline;
     PropertiesPanel m_properties;
+    WorldPanel m_world;
     StatusBarPanel m_statusBar;
     DialogsPanel m_dialogs;
 
