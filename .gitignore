@@ -1,0 +1,14 @@
+build/
+build-*/
+cmake-build-*/
+*.o
+*.obj
+*.exe
+*.log
+*.ini
+render/
+smoke_render/
+dist/
+.vs/
+.vscode/
+*.user

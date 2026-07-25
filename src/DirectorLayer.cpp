@@ -1,0 +1,1117 @@
+#include "DirectorLayer.h"
+
+#include <algorithm>
+#include <cmath>
+#include <chrono>
+#include <cstdlib>
+
+#include <glm/gtc/matrix_transform.hpp>
+
+#include "ImGuizmo.h"
+#include "imgui.h"
+#include "imgui_impl_glfw.h"
+#include "imgui_impl_opengl3.h"
+#include "imgui_internal.h" // DockBuilder — раскладка панелей по умолчанию
+
+#include "anim/DirectorComponents.h"
+#include "project/Project.h"
+#include "sage/anim/AnimationSystem.h"
+#include "sage/audio/AudioEngine.h"
+#include "sage/core/Application.h"
+#include "sage/core/Log.h"
+#include "sage/ecs/LightSystem.h"
+#include "sage/render/ParticleECS.h"
+#include "sage/rhi/GraphicsDevice.h"
+#include "sage/render/ResourceManager.h"
+#include "sage/render/Screenshot.h"
+#include "sage/render/SkinnedModel.h"
+#include "sage/scene/Components.h"
+#include "ui/Theme.h"
+
+namespace fs = std::filesystem;
+
+namespace d3d {
+
+namespace {
+
+// Луч из точки вьюпорта в мир — для выбора объекта кликом.
+void ScreenRay(const glm::mat4& view, const glm::mat4& proj, float u, float v,
+               glm::vec3& outOrigin, glm::vec3& outDir) {
+    // NDC: x вправо, y ВВЕРХ (в экранных координатах вниз — отсюда знак).
+    const glm::vec4 nearPoint(u * 2.0f - 1.0f, 1.0f - v * 2.0f, -1.0f, 1.0f);
+    const glm::vec4 farPoint(nearPoint.x, nearPoint.y, 1.0f, 1.0f);
+    const glm::mat4 inv = glm::inverse(proj * view);
+    glm::vec4 a = inv * nearPoint;
+    glm::vec4 b = inv * farPoint;
+    a /= a.w;
+    b /= b.w;
+    outOrigin = glm::vec3(a);
+    outDir = glm::normalize(glm::vec3(b) - glm::vec3(a));
+}
+
+// Пересечение луча с AABB в локальном пространстве (slab-тест). Возвращает
+// расстояние входа или -1 при промахе.
+float RayBox(const glm::vec3& ro, const glm::vec3& rd, const glm::vec3& bmin, const glm::vec3& bmax) {
+    const glm::vec3 inv = 1.0f / rd; // нулевая компонента даёт inf — slab-тест это переживает
+    const glm::vec3 t0 = (bmin - ro) * inv;
+    const glm::vec3 t1 = (bmax - ro) * inv;
+    const glm::vec3 tmin = glm::min(t0, t1), tmax = glm::max(t0, t1);
+    const float near = std::max({tmin.x, tmin.y, tmin.z});
+    const float far = std::min({tmax.x, tmax.y, tmax.z});
+    if (near > far || far < 0.0f) return -1.0f;
+    return near >= 0.0f ? near : far;
+}
+
+} // namespace
+
+DirectorLayer::DirectorLayer() : sage::Layer("Director3D") {}
+DirectorLayer::~DirectorLayer() = default;
+
+// ============================================================================
+//  Жизненный цикл
+// ============================================================================
+
+void DirectorLayer::OnAttach() {
+    sage::Application& app = sage::Application::Get();
+
+    // --- ImGui: доки + вытаскивание панелей в отдельные окна ОС ---
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+    io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+    // Своё имя ini-файла: раскладка Director 3D не должна пересекаться с
+    // раскладкой редактора SAGE, который тоже живёт на ImGui.
+    io.IniFilename = "director3d_imgui.ini";
+    Theme::LoadFonts();
+    Theme::Apply();
+    ImGui_ImplGlfw_InitForOpenGL(app.GetWindow().Handle(), true);
+    ImGui_ImplOpenGL3_Init("#version 330");
+    m_imguiReady = true;
+
+    m_renderer.Init();
+    m_assetsDir = fs::current_path();
+
+    BuildDefaultScene();
+
+    m_camera.Position = {7.0f, 4.5f, 9.0f};
+    m_camera.Yaw = -108.0f;
+    m_camera.Pitch = -16.0f;
+    m_camera.ProcessMouse(0.0f, 0.0f);
+
+    m_stage.RequestFocus();
+    LOG_INFO("Director") << "Director 3D запущен (объектов в сцене: " << m_scene->Count() << ")";
+
+    // Автоскриншот для проверок без человека за монитором: на заданном кадре
+    // окно сохраняется в PNG, и приложение закрывается. Кадр не нулевой,
+    // потому что ImGui первым кадром только строит раскладку дока — снимок с
+    // него показал бы пустоту вместо интерфейса.
+    if (const char* frame = std::getenv("D3D_SCREENSHOT_AT_FRAME")) {
+        m_autoScreenshotFrame = std::atoi(frame);
+        if (const char* path = std::getenv("D3D_SCREENSHOT_PATH")) m_autoScreenshotPath = path;
+        LOG_INFO("Director") << "Автоскриншот на кадре " << m_autoScreenshotFrame
+                             << " -> " << m_autoScreenshotPath;
+    }
+    if (std::getenv("D3D_ADVANCED")) m_simpleMode = false;
+    if (const char* tab = std::getenv("D3D_TIMELINE_TAB")) m_timeline.SetTab(std::atoi(tab));
+    if (std::getenv("D3D_DEMO")) BuildDemoAnimation();
+    if (std::getenv("D3D_SMOKE_TEST")) StartSmokeTest();
+}
+
+void DirectorLayer::OnDetach() {
+    if (m_imguiReady) {
+        ImGui_ImplOpenGL3_Shutdown();
+        ImGui_ImplGlfw_Shutdown();
+        ImGui::DestroyContext();
+        m_imguiReady = false;
+    }
+    // Кэш ресурсов — глобальный синглтон, и его деструктор сработал бы уже
+    // ПОСЛЕ разрушения окна, то есть без GL-контекста: удаление буферов там
+    // падает. OnDetach вызывается движком, пока контекст жив, — чистим здесь.
+    ResourceManager::Instance().Clear();
+}
+
+void DirectorLayer::BuildDefaultScene() {
+    m_scene = std::make_unique<Scene>("Director Scene");
+    m_doc.ClearContent();
+    m_doc.Name = "My_Animation_Project";
+    m_doc.Fps = 24.0f;
+    m_doc.Duration = 20.0f;
+    m_selection.clear();
+    m_undo.Clear();
+    m_playback.Stop();
+    m_dirty = false;
+    m_projectPath.clear();
+
+    // Стартовая сцена — минимальный съёмочный павильон: камера, свет, пол и
+    // объект. Пустая сцена технически честна, но с ней нечего анимировать, и
+    // первый запуск превращается в расстановку сцены вместо знакомства с
+    // инструментом.
+    m_scene->Lighting.Sun.Direction = glm::normalize(glm::vec3(-0.45f, -1.0f, -0.35f));
+    m_scene->Lighting.Sun.Intensity = 1.1f;
+    m_scene->Lighting.SkyColor = {0.42f, 0.50f, 0.66f};
+    m_scene->Lighting.GroundColor = {0.20f, 0.18f, 0.16f};
+    m_scene->Lighting.AmbientStrength = 0.35f;
+    m_scene->Lighting.Skybox.Enabled = true;
+
+    const int cameraId = Create(CreateKind::Camera);
+    RenameObject(cameraId, "Camera_Main");
+    if (GameObject cam = m_scene->Get(cameraId); cam.Valid()) {
+        cam.GetTransform().Position = {0.0f, 2.4f, 8.0f};
+        cam.GetTransform().Rotation = {-6.0f, 0.0f, 0.0f};
+    }
+    m_activeCameraId = cameraId;
+
+    const int keyLight = Create(CreateKind::SpotLight);
+    RenameObject(keyLight, "Key_Light");
+    if (GameObject light = m_scene->Get(keyLight); light.Valid()) {
+        light.GetTransform().Position = {4.0f, 5.5f, 4.0f};
+        light.GetTransform().Rotation = {-45.0f, 40.0f, 0.0f};
+    }
+
+    const int ground = Create(CreateKind::Plane);
+    RenameObject(ground, "Ground");
+    if (GameObject plane = m_scene->Get(ground); plane.Valid()) {
+        plane.GetTransform().Scale = {20.0f, 1.0f, 20.0f};
+        plane.Renderer().Color = {0.32f, 0.33f, 0.35f};
+    }
+
+    const int cube = Create(CreateKind::Cube);
+    RenameObject(cube, "Object");
+    if (GameObject obj = m_scene->Get(cube); obj.Valid()) {
+        obj.GetTransform().Position = {0.0f, 0.5f, 0.0f};
+        obj.Renderer().Color = {0.78f, 0.52f, 0.28f};
+    }
+
+    m_selection = {cube};
+    m_undo.Clear();  // стартовая сцена — это НЕ правка пользователя
+    m_dirty = false;
+    SetCurrentTime(0.0f);
+}
+
+void DirectorLayer::BuildDemoAnimation() {
+    // Демонстрация собирается ИЗ ТЕХ ЖЕ вызовов, что доступны пользователю:
+    // дорожка + ключи. Никаких «специальных» путей — если демо работает,
+    // работает и ручная анимация.
+    const int object = m_scene->FindByName("Object").Valid() ? m_scene->FindByName("Object").Id() : -1;
+    const int camera = m_activeCameraId;
+    const int light = m_scene->FindByName("Key_Light").Valid() ? m_scene->FindByName("Key_Light").Id() : -1;
+    if (object < 0) return;
+
+    m_doc.Duration = 6.0f;
+
+    // Объект: прыжок по дуге + оборот вокруг своей оси + смена цвета.
+    Track& position = m_doc.EnsureTrack(object, Property::Position);
+    position.Channels[0].SetKey(0.0f, -3.0f, Interp::EaseInOut);
+    position.Channels[0].SetKey(6.0f, 3.0f, Interp::EaseInOut);
+    position.Channels[1].SetKey(0.0f, 0.5f, Interp::EaseOut);
+    position.Channels[1].SetKey(1.5f, 2.6f, Interp::EaseInOut);
+    position.Channels[1].SetKey(3.0f, 0.5f, Interp::EaseIn);
+    position.Channels[1].SetKey(4.5f, 2.0f, Interp::EaseInOut);
+    position.Channels[1].SetKey(6.0f, 0.5f, Interp::EaseIn);
+
+    Track& rotation = m_doc.EnsureTrack(object, Property::Rotation);
+    rotation.Channels[1].SetKey(0.0f, 0.0f, Interp::Linear);
+    rotation.Channels[1].SetKey(6.0f, 720.0f, Interp::Linear);
+
+    Track& color = m_doc.EnsureTrack(object, Property::Color);
+    color.Channels[0].SetKey(0.0f, 0.78f); color.Channels[0].SetKey(3.0f, 0.30f); color.Channels[0].SetKey(6.0f, 0.78f);
+    color.Channels[1].SetKey(0.0f, 0.52f); color.Channels[1].SetKey(3.0f, 0.68f); color.Channels[1].SetKey(6.0f, 0.52f);
+    color.Channels[2].SetKey(0.0f, 0.28f); color.Channels[2].SetKey(3.0f, 0.85f); color.Channels[2].SetKey(6.0f, 0.28f);
+
+    // Камера: медленный наезд.
+    if (camera >= 0) {
+        Track& camPos = m_doc.EnsureTrack(camera, Property::Position);
+        camPos.Channels[2].SetKey(0.0f, 9.5f, Interp::EaseInOut);
+        camPos.Channels[2].SetKey(6.0f, 6.0f, Interp::EaseInOut);
+        Track& fov = m_doc.EnsureTrack(camera, Property::CameraFov);
+        fov.Channels[0].SetKey(0.0f, 55.0f, Interp::EaseInOut);
+        fov.Channels[0].SetKey(6.0f, 42.0f, Interp::EaseInOut);
+    }
+
+    // Свет: пульсация интенсивности.
+    if (light >= 0) {
+        Track& intensity = m_doc.EnsureTrack(light, Property::LightIntensity);
+        intensity.Channels[0].SetKey(0.0f, 1.2f, Interp::Smooth);
+        intensity.Channels[0].SetKey(3.0f, 3.0f, Interp::Smooth);
+        intensity.Channels[0].SetKey(6.0f, 1.2f, Interp::Smooth);
+    }
+
+    m_doc.Markers.push_back(Marker{"Пик", 1.5f, 0xFF3FC8E8});
+    m_doc.Markers.push_back(Marker{"Смена цвета", 3.0f, 0xFF5CC85C});
+
+    m_selection = {object};
+    m_undo.Clear();
+    m_dirty = false;
+    SetCurrentTime(0.0f);
+}
+
+void DirectorLayer::StartSmokeTest() {
+    m_smokeTest = true;
+    m_simpleMode = false; // проверяем и продвинутый интерфейс (граф, дорожки)
+    BuildDemoAnimation();
+
+    // Маленькое разрешение и всего несколько кадров: цель — доказать, что
+    // конвейер «документ -> сцена -> кадр -> файл» работает целиком, а не
+    // померить скорость.
+    m_renderSettings.Width = 320;
+    m_renderSettings.Height = 180;
+    m_renderSettings.StartTime = 0.0f;
+    m_renderSettings.EndTime = 2.0f / m_doc.Fps; // три кадра: 0, 1, 2
+    m_renderSettings.OutputDir = "smoke_render";
+    m_renderSettings.BaseName = "smoke";
+    StartRender();
+}
+
+void DirectorLayer::FinishSmokeTest() {
+    int found = 0;
+    std::error_code ec;
+    if (fs::is_directory(m_renderSettings.OutputDir, ec)) {
+        for (const fs::directory_entry& entry : fs::directory_iterator(m_renderSettings.OutputDir, ec)) {
+            // Пустой файл — это не отрендеренный кадр, а следы падения на
+            // середине записи, поэтому проверяем и размер.
+            if (entry.path().extension() == ".png" && entry.file_size(ec) > 0) ++found;
+        }
+    }
+    const int expected = m_exporter.TotalFrames();
+    if (found >= expected && !m_exporter.Failed()) {
+        LOG_INFO("Smoke") << "Сквозная проверка пройдена: кадров записано " << found
+                          << " из " << expected << ", дорожек " << m_doc.Tracks.size();
+    } else {
+        LOG_ERROR("Smoke") << "Сквозная проверка ПРОВАЛЕНА: кадров " << found
+                           << " из " << expected
+                           << (m_exporter.Failed() ? (", ошибка: " + m_exporter.Error()) : "");
+    }
+    // Скриншот интерфейса с наполненным таймлайном снимаем ПОСЛЕ рендера —
+    // так на нём видно и дорожки, и результат.
+    if (m_autoScreenshotFrame <= 0) sage::Application::Get().Close();
+    m_smokeTest = false;
+}
+
+// ============================================================================
+//  Кадр
+// ============================================================================
+
+void DirectorLayer::OnUpdate(float dt) {
+    if (m_statusTimer > 0.0f) {
+        m_statusTimer -= dt;
+        if (m_statusTimer <= 0.0f) m_status.clear();
+    }
+
+    // Экспорт секвенции забирает кадр целиком: сцена в это время ставится на
+    // каждый экспортируемый момент, и обычное проигрывание туда лезть не должно.
+    if (m_exporter.Active()) {
+        if (!m_exporter.Step(*m_scene, m_renderer, m_doc)) {
+            if (m_exporter.Failed()) SetStatus("Рендер прерван: " + m_exporter.Error());
+            else SetStatus("Рендер завершён: " + m_exporter.OutputDir());
+            m_playback.SetTime(m_timeBeforeRender, m_doc.Duration);
+            ApplyDocument(true);
+            if (m_smokeTest) FinishSmokeTest();
+        }
+        return;
+    }
+
+    // Проигрывание: сдвигаем головку и переприменяем документ.
+    const bool moved = m_playback.Advance(dt, m_doc.Duration);
+    if (moved) ApplyDocument(m_playback.Seeking());
+
+    // Скелетные аниматоры движка тикают ПОСЛЕ применения документа: документ
+    // говорит, ЧТО играет, а движок продвигает позу и ведёт кросс-фейд.
+    sage::anim::UpdateAnimators(*m_scene, m_playback.Playing() ? dt : 0.0f);
+    sage::fx::UpdateEmitters(*m_scene, m_renderer.Particles(), dt);
+
+    // Звук ведём за головкой: старт проигрывания запускает дорожку, остановка
+    // глушит её. Посэмпловой синхронизации с головкой движок не даёт, поэтому
+    // звук честно живёт «примерно с картинкой» — для расстановки ключей по
+    // ударам этого хватает, а волна на таймлайне точна до сэмпла.
+    if (m_playback.Playing() != m_audioWasPlaying) {
+        if (m_playback.Playing() && m_doc.Audio.Loaded() && !m_doc.Audio.Muted) {
+            m_audio.PlayMusic(m_doc.Audio.Path(), m_doc.Audio.Volume, /*loop=*/false);
+        } else {
+            m_audio.StopMusic();
+        }
+        m_audioWasPlaying = m_playback.Playing();
+    }
+    m_audio.Update();
+}
+
+void DirectorLayer::OnRender() {
+    if (m_exporter.Active()) return; // кадр занят экспортом
+
+    LightingEnvironment env = CollectVisibleLighting(*m_scene);
+#ifdef D3D_PROFILE_FRAME
+    auto t0 = std::chrono::steady_clock::now();
+#endif
+    m_renderer.RenderShadow(*m_scene, env);
+#ifdef D3D_PROFILE_FRAME
+    auto t1 = std::chrono::steady_clock::now();
+#endif
+    m_renderer.RenderStage(*m_scene, m_camera, env, m_shading, m_preset, m_activeCameraId,
+                           m_overlays, m_selection, m_view, m_proj);
+#ifdef D3D_PROFILE_FRAME
+    auto t2 = std::chrono::steady_clock::now();
+#endif
+    m_renderer.RenderCameraView(*m_scene, env, m_activeCameraId);
+
+    // Экранный буфер очищаем сами: превью-кадры ушли в свои FBO, а окно под
+    // интерфейс надо привести в известное состояние (и вернуть ему viewport,
+    // который сдвигали проходы теней и пост-обработки).
+    sage::rhi::GraphicsDevice& device = sage::Application::Get().Device();
+    Window& window = sage::Application::Get().GetWindow();
+    device.BindDefaultFramebuffer();
+    device.SetViewport(0, 0, window.Width(), window.Height());
+    device.SetClearColor(0.055f, 0.060f, 0.066f, 1.0f);
+    device.Clear();
+
+    DrawUI();
+#ifdef D3D_PROFILE_FRAME
+    auto t3 = std::chrono::steady_clock::now();
+    auto ms = [](auto a, auto b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
+    LOG_INFO("Prof") << "shadow " << ms(t0, t1) << " stage " << ms(t1, t2)
+                     << " view+ui " << ms(t2, t3) << " (stage " << m_renderer.StageWidth()
+                     << "x" << m_renderer.StageHeight() << ")";
+#endif
+}
+
+void DirectorLayer::DrawUI() {
+    if (!m_imguiReady) return;
+
+    ImGui_ImplOpenGL3_NewFrame();
+    ImGui_ImplGlfw_NewFrame();
+    ImGui::NewFrame();
+    ImGuizmo::BeginFrame();
+
+    HandleShortcuts();
+
+    // --- Каркас: полноэкранное окно с меню, тулбаром, доком и статус-баром ---
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(viewport->WorkPos);
+    ImGui::SetNextWindowSize(viewport->WorkSize);
+    ImGui::SetNextWindowViewport(viewport->ID);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+    ImGui::Begin("##DirectorRoot", nullptr,
+                 ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoTitleBar |
+                 ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
+                 ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
+                 ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_MenuBar);
+    ImGui::PopStyleVar(3);
+
+    m_menuBar.Draw(*this);
+
+    // --- Тулбар ---
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImGui::GetStyleColorVec4(ImGuiCol_MenuBarBg));
+    ImGui::BeginChild("##toolbar", ImVec2(0.0f, Theme::kToolbarHeight), false,
+                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::SetCursorPos(ImVec2(6.0f, 4.0f));
+    m_toolbar.Draw(*this);
+    ImGui::EndChild();
+    ImGui::PopStyleColor();
+
+    // --- Док ---
+    const ImGuiID dockspaceId = ImGui::GetID("D3DDockspace");
+    const float dockHeight = ImGui::GetContentRegionAvail().y - Theme::kStatusBarHeight;
+    ImGui::DockSpace(dockspaceId, ImVec2(0.0f, dockHeight), ImGuiDockNodeFlags_None);
+    if (!m_dockBuilt) {
+        m_dockBuilt = true;
+        // Раскладку строим только при первом запуске: если ini уже есть,
+        // пользователь свою раскладку настроил, и перетирать её нельзя.
+        if (ImGui::DockBuilderGetNode(dockspaceId) == nullptr ||
+            ImGui::DockBuilderGetNode(dockspaceId)->IsEmpty()) {
+            BuildDockLayout(dockspaceId);
+        }
+    }
+
+    // --- Статус-бар ---
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImGui::GetStyleColorVec4(ImGuiCol_MenuBarBg));
+    ImGui::BeginChild("##statusbar", ImVec2(0.0f, Theme::kStatusBarHeight), false,
+                      ImGuiWindowFlags_NoScrollbar);
+    ImGui::SetCursorPos(ImVec2(8.0f, 2.0f));
+    m_statusBar.Draw(*this);
+    ImGui::EndChild();
+    ImGui::PopStyleColor();
+
+    ImGui::End(); // ##DirectorRoot
+
+    // --- Панели ---
+    m_scenePanel.Draw(*this);
+    m_assetsPanel.Draw(*this);
+    m_stage.DrawViewport(*this);
+    m_stage.DrawRenderView(*this);
+    m_properties.Draw(*this);
+
+    // Транспорт живёт в собственном окне под вьюпортом — так он остаётся на
+    // виду, даже если таймлайн свернули или вытащили в отдельное окно.
+    ImGui::Begin("Transport");
+    m_timeline.DrawTransport(*this);
+    ImGui::End();
+
+    m_timeline.Draw(*this);
+    m_dialogs.Draw(*this);
+
+    ImGui::Render();
+    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+    // Снимок окна берём ЗДЕСЬ: кадр уже целиком в back buffer, но ещё не
+    // отдан на экран (SwapBuffers делает Application после всех слоёв).
+    ++m_frameCounter;
+    if (m_autoScreenshotFrame > 0 && m_frameCounter >= m_autoScreenshotFrame) {
+        m_autoScreenshotFrame = 0; // один снимок за запуск
+        Window& window = sage::Application::Get().GetWindow();
+        SaveScreenshot(m_autoScreenshotPath, window.Width(), window.Height());
+        sage::Application::Get().Close();
+    }
+
+    if (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
+        GLFWwindow* backup = glfwGetCurrentContext();
+        ImGui::UpdatePlatformWindows();
+        ImGui::RenderPlatformWindowsDefault();
+        glfwMakeContextCurrent(backup);
+    }
+}
+
+void DirectorLayer::BuildDockLayout(unsigned int dockspaceId) {
+    ImGui::DockBuilderRemoveNode(dockspaceId);
+    ImGui::DockBuilderAddNode(dockspaceId, ImGuiDockNodeFlags_DockSpace);
+    ImGui::DockBuilderSetNodeSize(dockspaceId, ImGui::GetMainViewport()->WorkSize);
+
+    // Раскладка повторяет референс: слева дерево сцены и ассеты, справа
+    // свойства, в центре вьюпорт, под ним транспорт и таймлайн.
+    // ВАЖНО: у каждого сплита забираем ОБА узла. Если не забрать «остаток»
+    // (последний параметр), переменная продолжает указывать на узел, который
+    // после сплита стал РОДИТЕЛЬСКИМ, и окно, пристыкованное к нему, накрывает
+    // собой всю область — вместо своей половины.
+    ImGuiID center = dockspaceId;
+    const ImGuiID right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.24f, nullptr, &center);
+    ImGuiID left = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.20f, nullptr, &center);
+    ImGuiID bottom = ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.36f, nullptr, &center);
+
+    ImGuiID leftTop = left;
+    const ImGuiID leftBottom = ImGui::DockBuilderSplitNode(left, ImGuiDir_Down, 0.48f, nullptr, &leftTop);
+
+    // Транспорт — узкая полоса между вьюпортом и таймлайном.
+    ImGuiID timelineNode = bottom;
+    const ImGuiID transport = ImGui::DockBuilderSplitNode(bottom, ImGuiDir_Up, 0.18f, nullptr, &timelineNode);
+
+    ImGui::DockBuilderDockWindow("Scene", leftTop);
+    ImGui::DockBuilderDockWindow("Assets", leftBottom);
+    ImGui::DockBuilderDockWindow("Viewport", center);
+    ImGui::DockBuilderDockWindow("Render View", center);
+    ImGui::DockBuilderDockWindow("Properties", right);
+    ImGui::DockBuilderDockWindow("Transport", transport);
+    ImGui::DockBuilderDockWindow("Timeline", timelineNode);
+    ImGui::DockBuilderFinish(dockspaceId);
+}
+
+// ============================================================================
+//  Горячие клавиши
+// ============================================================================
+
+void DirectorLayer::HandleShortcuts() {
+    ImGuiIO& io = ImGui::GetIO();
+    // Пока набирают текст или открыта модалка — клавиши принадлежат им.
+    if (io.WantTextInput || m_dialogs.AnyOpen()) return;
+
+    const bool ctrl = io.KeyCtrl;
+    const bool shift = io.KeyShift;
+
+    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_N)) OpenDialog(Dialog::NewProject);
+    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_O)) OpenDialog(Dialog::OpenProject);
+    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_S)) {
+        if (shift || m_projectPath.empty()) {
+            OpenDialog(Dialog::SaveProjectAs);
+        } else {
+            std::string err;
+            if (SaveProject(m_projectPath, err)) m_statusBar.NoteSaved();
+            else SetStatus("Не сохранилось: " + err);
+        }
+    }
+    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_I)) OpenDialog(Dialog::ImportAsset);
+    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_Z)) Undo();
+    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_Y)) Redo();
+    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_D)) DuplicateSelected();
+    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_K)) {
+        m_autoKey = !m_autoKey;
+        SetStatus(m_autoKey ? "Авто-ключ включён" : "Авто-ключ выключен");
+    }
+
+    if (!ctrl) {
+        if (ImGui::IsKeyPressed(ImGuiKey_Space)) {
+            if (shift) { m_playback.Stop(); SetCurrentTime(0.0f); }
+            else m_playback.TogglePlay();
+        }
+        if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow)) StepFrames(-1);
+        if (ImGui::IsKeyPressed(ImGuiKey_RightArrow)) StepFrames(1);
+        if (ImGui::IsKeyPressed(ImGuiKey_Home)) SetCurrentTime(0.0f);
+        if (ImGui::IsKeyPressed(ImGuiKey_End)) SetCurrentTime(m_doc.Duration);
+        if (ImGui::IsKeyPressed(ImGuiKey_Comma)) {
+            float t = 0.0f;
+            if (m_doc.PrevKeyTime(CurrentTime(), t)) SetCurrentTime(t);
+        }
+        if (ImGui::IsKeyPressed(ImGuiKey_Period)) {
+            float t = 0.0f;
+            if (m_doc.NextKeyTime(CurrentTime(), t)) SetCurrentTime(t);
+        }
+        if (ImGui::IsKeyPressed(ImGuiKey_K)) KeySelected();
+        if (ImGui::IsKeyPressed(ImGuiKey_L)) m_playback.Loop = !m_playback.Loop;
+        if (ImGui::IsKeyPressed(ImGuiKey_M)) {
+            PushUndo();
+            Marker marker;
+            marker.Time = CurrentTime();
+            marker.Name = "Marker " + std::to_string(m_doc.Markers.size() + 1);
+            m_doc.Markers.push_back(marker);
+            SetStatus("Метка поставлена");
+        }
+        if (ImGui::IsKeyPressed(ImGuiKey_F12)) StartRender();
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape)) ClearSelection();
+        // Delete во вьюпорте/дереве удаляет объект; в таймлайне его перехватывает
+        // сама панель (там Delete убирает ключи).
+        if (ImGui::IsKeyPressed(ImGuiKey_Delete) && !ImGui::IsWindowFocused(ImGuiFocusedFlags_AnyWindow)) {
+            DeleteSelected();
+        }
+
+        if (ImGui::IsKeyPressed(ImGuiKey_1)) m_preset = ViewPreset::Perspective;
+        if (ImGui::IsKeyPressed(ImGuiKey_2)) m_preset = ViewPreset::Front;
+        if (ImGui::IsKeyPressed(ImGuiKey_3)) m_preset = ViewPreset::Side;
+        if (ImGui::IsKeyPressed(ImGuiKey_4)) m_preset = ViewPreset::Top;
+        if (ImGui::IsKeyPressed(ImGuiKey_0)) m_preset = ViewPreset::SceneCamera;
+    }
+}
+
+// ============================================================================
+//  Выбор
+// ============================================================================
+
+void DirectorLayer::SetSelectedId(int id) {
+    m_selection.clear();
+    if (id >= 0 && m_scene->Get(id).Valid()) m_selection.push_back(id);
+}
+
+GameObject DirectorLayer::SelectedObject() {
+    return m_selection.empty() ? GameObject() : m_scene->Get(m_selection.back());
+}
+
+bool DirectorLayer::IsSelected(int id) const {
+    return std::find(m_selection.begin(), m_selection.end(), id) != m_selection.end();
+}
+
+void DirectorLayer::ToggleSelection(int id) {
+    auto it = std::find(m_selection.begin(), m_selection.end(), id);
+    if (it != m_selection.end()) m_selection.erase(it);
+    else if (m_scene->Get(id).Valid()) m_selection.push_back(id);
+}
+
+void DirectorLayer::ValidateSelection() {
+    m_selection.erase(std::remove_if(m_selection.begin(), m_selection.end(),
+                                     [this](int id) { return !m_scene->Get(id).Valid(); }),
+                      m_selection.end());
+    if (!m_scene->Get(m_activeCameraId).Valid()) {
+        // Активная камера пропала — берём любую другую, иначе Render View и
+        // экспорт остались бы «без глаз» без объяснения.
+        m_activeCameraId = -1;
+        auto view = m_scene->Registry().view<CameraComponent, IdComponent>();
+        for (auto e : view) {
+            m_activeCameraId = view.get<IdComponent>(e).Id;
+            break;
+        }
+    }
+}
+
+void DirectorLayer::PickAtStage(float u, float v, bool additive) {
+    glm::vec3 origin, dir;
+    ScreenRay(m_view, m_proj, u, v, origin, dir);
+
+    int bestId = -1;
+    float bestDistance = 1e30f;
+
+    auto& reg = m_scene->Registry();
+    auto view = reg.view<Transform, IdComponent>();
+    for (auto e : view) {
+        if (HiddenObjects::IsHidden(*m_scene, e)) continue; // скрытое не кликается
+
+        const glm::mat4 world = m_scene->WorldMatrix(e);
+        const glm::mat4 inv = glm::inverse(world);
+        const glm::vec3 localOrigin = glm::vec3(inv * glm::vec4(origin, 1.0f));
+        const glm::vec3 localDir = glm::normalize(glm::vec3(inv * glm::vec4(dir, 0.0f)));
+
+        float hit = -1.0f;
+        const MeshRendererComponent* mr = reg.try_get<MeshRendererComponent>(e);
+        if (mr && mr->MeshPtr) {
+            // Оболочка меша: центр и радиус превращаем в куб — точного
+            // пересечения с треугольниками для выбора мышью не нужно, а
+            // считается это в тысячи раз дешевле.
+            const glm::vec3 c = mr->MeshPtr->BoundsCenter();
+            const float r = mr->MeshPtr->BoundsRadius();
+            hit = RayBox(localOrigin, localDir, c - glm::vec3(r), c + glm::vec3(r));
+        } else if (reg.any_of<CameraComponent, LightComponent, ParticleEmitterComponent,
+                              AnimatedModelComponent>(e)) {
+            // У камеры, света и эмиттера меша нет — кликаем по их маркеру.
+            hit = RayBox(localOrigin, localDir, glm::vec3(-0.45f), glm::vec3(0.45f));
+        }
+        if (hit < 0.0f) continue;
+
+        // Расстояние считаем в МИРОВЫХ единицах: масштаб объекта иначе делал бы
+        // мелкие объекты «ближе» крупных.
+        const glm::vec3 worldHit = glm::vec3(world * glm::vec4(localOrigin + localDir * hit, 1.0f));
+        const float distance = glm::length(worldHit - origin);
+        if (distance < bestDistance) {
+            bestDistance = distance;
+            bestId = view.get<IdComponent>(e).Id;
+        }
+    }
+
+    if (bestId < 0) {
+        if (!additive) ClearSelection();
+        return;
+    }
+    if (additive) ToggleSelection(bestId);
+    else SetSelectedId(bestId);
+}
+
+// ============================================================================
+//  Время и ключи
+// ============================================================================
+
+void DirectorLayer::ApplyDocument(bool seeking) {
+    m_doc.Apply(*m_scene, m_playback.Time(), seeking);
+    if (seeking) {
+        // Перемотка должна показать позу СРАЗУ, не дожидаясь следующего
+        // OnUpdate: иначе при паузе картинка отстаёт на кадр от головки.
+        sage::anim::UpdateAnimators(*m_scene, 0.0f);
+    }
+}
+
+void DirectorLayer::SetCurrentTime(float seconds) {
+    m_playback.SetTime(Playback::SnapToFrame(seconds, m_doc.Fps), m_doc.Duration);
+    ApplyDocument(true);
+    m_playback.ClearSeeking();
+}
+
+void DirectorLayer::StepFrames(int frames) {
+    const float step = frames / std::max(m_doc.Fps, 1.0f);
+    SetCurrentTime(m_playback.Time() + step);
+}
+
+bool DirectorLayer::KeyProperty(int entityId, Property prop) {
+    if (!m_doc.KeyFromScene(*m_scene, entityId, prop, CurrentTime())) return false;
+    m_dirty = true;
+    return true;
+}
+
+int DirectorLayer::KeySelected() {
+    if (m_selection.empty()) return 0;
+    PushUndo();
+
+    int keyed = 0;
+    for (int id : m_selection) {
+        const int existing = m_doc.KeyExistingTracks(*m_scene, id, CurrentTime());
+        if (existing > 0) {
+            keyed += existing;
+            continue;
+        }
+        // Дорожек ещё нет — заводим самые ожидаемые (трансформ): «поставить
+        // ключ» на объекте без дорожек должно что-то делать, а не молчать.
+        for (Property prop : {Property::Position, Property::Rotation, Property::Scale}) {
+            if (PropertyApplies(*m_scene, id, prop) && KeyProperty(id, prop)) ++keyed;
+        }
+    }
+    m_dirty = true;
+    SetStatus(keyed > 0 ? "Ключи поставлены" : "Ключить нечего");
+    return keyed;
+}
+
+void DirectorLayer::NotifyObjectEdited(int entityId) {
+    m_dirty = true;
+    if (!m_autoKey) return;
+    // Авто-ключ пишет только в СУЩЕСТВУЮЩИЕ дорожки: иначе каждое случайное
+    // касание ползунка заводило бы новую дорожку и засоряло проект.
+    if (m_doc.KeyExistingTracks(*m_scene, entityId, CurrentTime()) == 0) {
+        for (Property prop : {Property::Position, Property::Rotation, Property::Scale}) {
+            if (PropertyApplies(*m_scene, entityId, prop)) m_doc.KeyFromScene(*m_scene, entityId, prop, CurrentTime());
+        }
+    }
+}
+
+// ============================================================================
+//  Отмена
+// ============================================================================
+
+std::string DirectorLayer::Snapshot() {
+    return ProjectFile::SnapshotToString(*m_scene, m_doc);
+}
+
+void DirectorLayer::RestoreSnapshot(const std::string& snapshot) {
+    std::unique_ptr<Scene> restored;
+    std::string err;
+    if (!ProjectFile::RestoreFromString(snapshot, restored, m_doc, err)) {
+        LOG_ERROR("Director") << "Не удалось восстановить состояние: " << err;
+        SetStatus("Отмена не удалась: " + err);
+        return;
+    }
+    m_scene = std::move(restored);
+    ValidateSelection();
+    ApplyDocument(true);
+    m_dirty = true;
+}
+
+void DirectorLayer::PushUndo() {
+    m_undo.Push(Snapshot());
+    m_dirty = true;
+}
+
+void DirectorLayer::CaptureUndo() { m_undo.Capture(Snapshot()); }
+void DirectorLayer::CommitUndo() { m_undo.Commit(); m_dirty = true; }
+
+void DirectorLayer::TrackLastItem() {
+    // Виджет стал активным (мышь на нём зажали) — запоминаем состояние «до»,
+    // но в стек ещё не кладём: жест мог закончиться без изменений.
+    if (ImGui::IsItemActivated()) CaptureUndo();
+    if (ImGui::IsItemEdited()) CommitUndo();
+    if (ImGui::IsItemDeactivated() && m_undo.HasPending()) m_undo.DropPending();
+}
+
+void DirectorLayer::Undo() {
+    std::string snapshot;
+    if (!m_undo.Undo(Snapshot(), snapshot)) {
+        SetStatus("Отменять нечего");
+        return;
+    }
+    RestoreSnapshot(snapshot);
+    SetStatus("Отменено");
+}
+
+void DirectorLayer::Redo() {
+    std::string snapshot;
+    if (!m_undo.Redo(Snapshot(), snapshot)) {
+        SetStatus("Повторять нечего");
+        return;
+    }
+    RestoreSnapshot(snapshot);
+    SetStatus("Повторено");
+}
+
+// ============================================================================
+//  Объекты сцены
+// ============================================================================
+
+int DirectorLayer::Create(CreateKind kind) {
+    auto& reg = m_scene->Registry();
+    const char* name = "Object";
+    switch (kind) {
+        case CreateKind::Camera:         name = "Camera"; break;
+        case CreateKind::PointLight:     name = "Point_Light"; break;
+        case CreateKind::SpotLight:      name = "Spot_Light"; break;
+        case CreateKind::Cube:           name = "Cube"; break;
+        case CreateKind::Sphere:         name = "Sphere"; break;
+        case CreateKind::Plane:          name = "Plane"; break;
+        case CreateKind::Cylinder:       name = "Cylinder"; break;
+        case CreateKind::Cone:           name = "Cone"; break;
+        case CreateKind::Character:      name = "Character"; break;
+        case CreateKind::ParticleEffect: name = "Effect"; break;
+        case CreateKind::Group:          name = "Group"; break;
+    }
+
+    GameObject obj = m_scene->CreateObject(name);
+    const entt::entity e = obj.Entity();
+    reg.emplace<StageItemComponent>(e);
+
+    // Новый объект ставим ПЕРЕД камерой вида, а не в начало координат: иначе он
+    // появляется вне кадра и его приходится искать.
+    obj.GetTransform().Position = m_camera.Position + m_camera.Front * 6.0f;
+
+    switch (kind) {
+        case CreateKind::Camera: {
+            CameraComponent cam;
+            cam.Primary = !m_scene->Registry().view<CameraComponent>().empty() ? false : true;
+            reg.emplace<CameraComponent>(e, cam);
+            reg.emplace<CineCameraComponent>(e);
+            if (m_activeCameraId < 0) m_activeCameraId = obj.Id();
+            break;
+        }
+        case CreateKind::PointLight:
+        case CreateKind::SpotLight: {
+            LightComponent light;
+            light.Kind = kind == CreateKind::SpotLight ? LightComponent::Type::Spot
+                                                       : LightComponent::Type::Point;
+            reg.emplace<LightComponent>(e, light);
+            break;
+        }
+        case CreateKind::Character: {
+            // Без ассета ставим встроенную демо-модель движка: у неё есть
+            // скелет и клип, поэтому дорожку клипов можно попробовать сразу.
+            AnimatedModelComponent anim;
+            anim.Path.clear();
+            reg.emplace<AnimatedModelComponent>(e, std::move(anim));
+            obj.GetTransform().Position.y = 0.0f;
+            break;
+        }
+        case CreateKind::ParticleEffect: {
+            reg.emplace<ParticleEmitterComponent>(e);
+            break;
+        }
+        case CreateKind::Group:
+            break; // пустая сущность — просто узел иерархии
+        default: {
+            MeshRef::Type type = MeshRef::Type::Cube;
+            if (kind == CreateKind::Sphere) type = MeshRef::Type::Sphere;
+            else if (kind == CreateKind::Plane) type = MeshRef::Type::Plane;
+            else if (kind == CreateKind::Cylinder) type = MeshRef::Type::Cylinder;
+            else if (kind == CreateKind::Cone) type = MeshRef::Type::Cone;
+            MeshRendererComponent& mr = obj.Renderer();
+            mr.Ref.type = type;
+            mr.MeshPtr = ResourceManager::Instance().GetPrimitive(type);
+            break;
+        }
+    }
+
+    m_selection = {obj.Id()};
+    m_dirty = true;
+    return obj.Id();
+}
+
+void DirectorLayer::DeleteSelected() {
+    if (m_selection.empty()) return;
+    PushUndo();
+    for (int id : m_selection) {
+        // Вместе с объектом уходят и его дорожки: иначе в проекте копились бы
+        // «висячие» дорожки, которые никуда не пишут.
+        m_doc.RemoveTracksOf(id);
+        m_scene->RemoveObject(id);
+    }
+    m_selection.clear();
+    ValidateSelection();
+    m_dirty = true;
+    SetStatus("Удалено");
+}
+
+void DirectorLayer::DuplicateSelected() {
+    if (m_selection.empty()) return;
+    PushUndo();
+
+    auto& reg = m_scene->Registry();
+    std::vector<int> created;
+    for (int id : m_selection) {
+        GameObject src = m_scene->Get(id);
+        if (!src.Valid()) continue;
+        const entt::entity from = src.Entity();
+
+        GameObject copy = m_scene->CreateObject(src.Name() + "_copy");
+        const entt::entity to = copy.Entity();
+        copy.GetTransform() = src.GetTransform();
+        copy.GetTransform().Position.x += 1.0f; // чтобы копия не пряталась в оригинале
+
+        // Копируем компоненты поштучно: entt не умеет «скопировать сущность»
+        // сам, а перечисление здесь держит поведение явным.
+        if (const MeshRendererComponent* mr = reg.try_get<MeshRendererComponent>(from)) {
+            copy.Renderer() = *mr;
+        }
+        if (const CameraComponent* c = reg.try_get<CameraComponent>(from)) {
+            CameraComponent copyCam = *c;
+            copyCam.Primary = false; // главной остаётся оригинал
+            reg.emplace<CameraComponent>(to, copyCam);
+        }
+        if (const CineCameraComponent* c = reg.try_get<CineCameraComponent>(from)) reg.emplace<CineCameraComponent>(to, *c);
+        if (const LightComponent* c = reg.try_get<LightComponent>(from)) reg.emplace<LightComponent>(to, *c);
+        if (const ParticleEmitterComponent* c = reg.try_get<ParticleEmitterComponent>(from)) reg.emplace<ParticleEmitterComponent>(to, *c);
+        if (const StageItemComponent* c = reg.try_get<StageItemComponent>(from)) reg.emplace<StageItemComponent>(to, *c);
+        else reg.emplace<StageItemComponent>(to);
+        if (const SourceAssetComponent* c = reg.try_get<SourceAssetComponent>(from)) reg.emplace<SourceAssetComponent>(to, *c);
+        if (const AnimatedModelComponent* c = reg.try_get<AnimatedModelComponent>(from)) {
+            // Копируем ОПИСАНИЕ, а не рантайм: у копии свой Animator и своя
+            // загрузка, иначе две сущности делили бы одно состояние позы.
+            AnimatedModelComponent anim;
+            anim.Path = c->Path;
+            anim.DemoSegments = c->DemoSegments;
+            anim.Clip = c->Clip;
+            anim.Speed = c->Speed;
+            anim.Loop = c->Loop;
+            anim.Playing = c->Playing;
+            anim.BlendTime = c->BlendTime;
+            reg.emplace<AnimatedModelComponent>(to, std::move(anim));
+        }
+
+        // Родитель у копии тот же — копия остаётся в той же ветке дерева.
+        const entt::entity parent = m_scene->ParentOf(from);
+        if (parent != entt::null) m_scene->SetParent(to, parent);
+
+        created.push_back(copy.Id());
+    }
+
+    if (!created.empty()) {
+        m_selection = created;
+        m_dirty = true;
+        SetStatus("Продублировано");
+    }
+}
+
+void DirectorLayer::RenameObject(int id, const std::string& name) {
+    GameObject obj = m_scene->Get(id);
+    if (!obj.Valid() || name.empty()) return;
+    PushUndo();
+    obj.SetName(name);
+    m_dirty = true;
+}
+
+void DirectorLayer::SetParentOf(int childId, int parentId) {
+    GameObject child = m_scene->Get(childId);
+    if (!child.Valid()) return;
+    PushUndo();
+    if (parentId < 0) {
+        m_scene->SetParent(child.Entity(), entt::null);
+    } else {
+        GameObject parent = m_scene->Get(parentId);
+        if (parent.Valid()) m_scene->SetParent(child.Entity(), parent.Entity());
+    }
+    m_dirty = true;
+}
+
+void DirectorLayer::FocusOnSelected() {
+    GameObject obj = SelectedObject();
+    if (!obj.Valid()) return;
+
+    const glm::vec3 target = glm::vec3(m_scene->WorldMatrix(obj.Entity())[3]);
+    // Дистанцию берём по размеру объекта, чтобы и мелкая лампа, и большая
+    // модель занимали в кадре примерно одинаковую долю.
+    float radius = 1.0f;
+    if (const MeshRendererComponent* mr = m_scene->Registry().try_get<MeshRendererComponent>(obj.Entity())) {
+        if (mr->MeshPtr) {
+            const glm::vec3 scale = glm::abs(obj.GetTransform().Scale);
+            radius = mr->MeshPtr->BoundsRadius() * std::max({scale.x, scale.y, scale.z});
+        }
+    }
+    const float distance = std::max(radius * 3.2f, 2.0f);
+    m_camera.Position = target - m_camera.Front * distance;
+    SetStatus("Камера наведена на " + obj.Name());
+}
+
+int DirectorLayer::ImportAsset(const fs::path& path) {
+    std::error_code ec;
+    if (!fs::exists(path, ec)) return -1;
+
+    std::string ext = path.extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(),
+                   [](unsigned char c) { return (char)std::tolower(c); });
+
+    PushUndo();
+    auto& reg = m_scene->Registry();
+
+    if (ext == ".glb" || ext == ".gltf") {
+        // Скелетная модель: проверяем загрузку ДО создания сущности, иначе в
+        // сцене оставался бы пустой объект после неудачного импорта.
+        try {
+            std::unique_ptr<sage::render::SkinnedModel> probe = sage::render::SkinnedModel::Load(path.string());
+            if (!probe) return -1;
+        } catch (const std::exception& e) {
+            LOG_ERROR("Director") << "Импорт не удался (" << path.string() << "): " << e.what();
+            return -1;
+        }
+
+        GameObject obj = m_scene->CreateObject(path.stem().string());
+        const entt::entity e = obj.Entity();
+        AnimatedModelComponent anim;
+        anim.Path = path.string();
+        reg.emplace<AnimatedModelComponent>(e, std::move(anim));
+        reg.emplace<StageItemComponent>(e);
+        reg.emplace<SourceAssetComponent>(e, SourceAssetComponent{path.string()});
+        m_selection = {obj.Id()};
+        m_dirty = true;
+        return obj.Id();
+    }
+
+    if (ext == ".obj") {
+        std::shared_ptr<Mesh> mesh = ResourceManager::Instance().GetModel(path.string());
+        if (!mesh) return -1;
+
+        GameObject obj = m_scene->CreateObject(path.stem().string());
+        MeshRendererComponent& mr = obj.Renderer();
+        mr.Ref.type = MeshRef::Type::Model;
+        mr.Ref.path = path.string();
+        mr.MeshPtr = std::move(mesh);
+        reg.emplace<StageItemComponent>(obj.Entity());
+        reg.emplace<SourceAssetComponent>(obj.Entity(), SourceAssetComponent{path.string()});
+        m_selection = {obj.Id()};
+        m_dirty = true;
+        return obj.Id();
+    }
+
+    LOG_ERROR("Director") << "Формат не поддерживается для импорта: " << ext;
+    return -1;
+}
+
+// ============================================================================
+//  Файлы проекта
+// ============================================================================
+
+void DirectorLayer::NewProject() {
+    BuildDefaultScene();
+    SetStatus("Новый проект");
+}
+
+bool DirectorLayer::OpenProject(const fs::path& path, std::string& err) {
+    std::unique_ptr<Scene> loaded;
+    float playhead = 0.0f;
+    if (!ProjectFile::Load(path.string(), loaded, m_doc, playhead, err)) return false;
+
+    m_scene = std::move(loaded);
+    m_projectPath = path;
+    m_selection.clear();
+    m_undo.Clear();
+    m_playback.Stop();
+    m_dirty = false;
+
+    // Активной делаем первую камеру загруженной сцены.
+    m_activeCameraId = -1;
+    ValidateSelection();
+
+    m_assetsDir = path.has_parent_path() ? path.parent_path() : fs::current_path();
+    m_assetsPanel.Invalidate();
+    SetCurrentTime(playhead);
+    m_stage.RequestFocus();
+    return true;
+}
+
+bool DirectorLayer::SaveProject(const fs::path& path, std::string& err) {
+    if (!ProjectFile::Save(path.string(), *m_scene, m_doc, CurrentTime(), err)) return false;
+    m_projectPath = path;
+    m_dirty = false;
+    m_statusBar.NoteSaved();
+    m_assetsPanel.Invalidate();
+    return true;
+}
+
+bool DirectorLayer::ExportSceneToEngine(const fs::path& path, std::string& err) {
+    return ProjectFile::SaveSceneOnly(path.string(), *m_scene, err);
+}
+
+// ============================================================================
+//  Рендер и прочее
+// ============================================================================
+
+void DirectorLayer::StartRender() {
+    if (m_exporter.Active()) {
+        SetStatus("Рендер уже идёт");
+        return;
+    }
+    m_renderSettings.CameraId = m_activeCameraId;
+    m_timeBeforeRender = CurrentTime();
+    m_playback.Pause(); // проигрывание и покадровый экспорт одновременно бессмысленны
+
+    std::string err;
+    if (!m_exporter.Begin(m_renderSettings, m_doc, *m_scene, err)) {
+        SetStatus("Рендер не запущен: " + err);
+        return;
+    }
+    SetStatus("Рендер запущен: " + std::to_string(m_exporter.TotalFrames()) + " кадр(ов)");
+}
+
+void DirectorLayer::SetStatus(const std::string& message) {
+    m_status = message;
+    m_statusTimer = 5.0f; // сообщение живёт пять секунд и уходит само
+}
+
+void DirectorLayer::RequestQuit() {
+    sage::Application::Get().Close();
+}
+
+} // namespace d3d

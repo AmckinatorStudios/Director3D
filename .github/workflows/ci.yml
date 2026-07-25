@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    name: Сборка + проверки (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Director 3D
+        uses: actions/checkout@v4
+        with:
+          path: Director3D
+
+      # Движок кладём СОСЕДНИМ каталогом — ровно так, как его ищет
+      # CMakeLists (../SAGE-Engine). Никаких особых путей в сборке.
+      - name: Checkout SAGE Engine
+        uses: actions/checkout@v4
+        with:
+          repository: AmckinatorStudios/SAGE-Engine
+          ref: ${{ github.ref_name }}
+          path: SAGE-Engine
+        continue-on-error: true
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake g++ ninja-build libx11-dev libxrandr-dev libxinerama-dev \
+            libxcursor-dev libxi-dev libgl1-mesa-dev xvfb
+
+      - name: Configure
+        working-directory: Director3D
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        working-directory: Director3D
+        run: cmake --build build -j"$(nproc)"
+
+      # Ядро анимации (кривые/дорожки/документ/undo/проект/WAV) — без окна и GL.
+      - name: Self-test (animation core)
+        working-directory: Director3D
+        run: ./build/Director3D --self-test
+
+      # Сквозная проверка на живом GPU (программный OpenGL под xvfb):
+      # демо-анимация -> рендер секвенции PNG -> сверка файлов.
+      - name: Headless smoke test (render pipeline)
+        working-directory: Director3D/build
+        run: |
+          D3D_WINDOW_WIDTH=800 D3D_WINDOW_HEIGHT=600 D3D_SMOKE_TEST=1 \
+            xvfb-run -a --server-args="-screen 0 800x600x24" ./Director3D | tee smoke.txt
+          grep -q "Сквозная проверка пройдена" smoke.txt

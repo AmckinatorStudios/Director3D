@@ -1,0 +1,156 @@
+#pragma once
+#include <string>
+#include <vector>
+
+#include "anim/AudioTrack.h"
+#include "anim/Binding.h"
+#include "anim/Curve.h"
+
+class Scene;
+
+// ---------------------------------------------------------------------------
+// AnimationDocument — вся анимация проекта: что, когда и как меняется.
+//
+// Документ ОТДЕЛЁН от сцены. Сцена отвечает на вопрос «что стоит в кадре»
+// (её грузит и сохраняет движковый SceneSerializer), документ — «как это
+// движется во времени». Отсюда всё остальное:
+//   • перемотка = Apply(scene, t): документ пишет в сцену значения на момент t,
+//     а не хранит собственную копию мира. Сцена всегда одна и та же;
+//   • undo снимает слепок обоих, и они не могут разъехаться;
+//   • ту же сцену можно открыть без анимации (или с другой) — это просто сцена.
+//
+// Три вида дорожек, ровно как на таймлайне:
+//   Track     — свойство сущности, разложенное по каналам-кривым (Location X/Y/Z);
+//   ClipTrack — блоки скелетных клипов персонажа (Hero_Idle → Hero_Run → …);
+//   AudioTrack— звуковая дорожка сцены с волновой формой (см. AudioTrack.h).
+//
+// Время везде в СЕКУНДАХ (float) — так же, как dt движка. Кадры/таймкод — это
+// только представление (см. Playback.h): смена fps не должна двигать анимацию.
+// ---------------------------------------------------------------------------
+namespace d3d {
+
+// Дорожка одного свойства одной сущности. Каналов 1 или 3 — по PropertyInfo.
+struct Track {
+    int Id = 0;
+    int TargetId = 0;          // id сущности в сцене
+    Property Prop = Property::Position;
+    bool Muted = false;        // не применяется к сцене (но остаётся в проекте)
+    bool Locked = false;       // защита от правки ключей мышью
+    bool Expanded = true;      // раскрыта ли в таймлайне (состояние UI, сохраняется)
+    std::vector<Curve> Channels;
+
+    int ChannelCount() const { return (int)Channels.size(); }
+};
+
+// Блок скелетного клипа на таймлайне персонажа — цветной прямоугольник в
+// референсе. Клип берётся из загруженной модели (.glb) по индексу.
+struct ClipBlock {
+    std::string Name;      // подпись на блоке (обычно имя клипа модели)
+    int ClipIndex = 0;     // индекс в SkinnedModel::Clips()
+    float Start = 0.0f;    // когда блок начинается на таймлайне, сек
+    float Duration = 1.0f; // сколько идёт на таймлайне, сек
+    float Speed = 1.0f;    // множитель скорости проигрывания клипа
+    float BlendIn = 0.25f; // кросс-фейд с предыдущим блоком, сек
+    bool Loop = true;      // зациклить клип, если блок длиннее клипа
+};
+
+// Дорожка скелетных клипов одной сущности (у неё должен быть AnimatedModelComponent).
+struct ClipTrack {
+    int Id = 0;
+    int TargetId = 0;
+    bool Muted = false;
+    std::vector<ClipBlock> Blocks; // отсортированы по Start
+};
+
+// Именованная метка времени: «начало сцены», «удар», «смена плана».
+struct Marker {
+    std::string Name;
+    float Time = 0.0f;
+    unsigned int Color = 0xFF3FC8E8;
+};
+
+class AnimationDocument {
+public:
+    // --- Параметры монтажа ---
+    float Fps = 24.0f;       // кадров в секунду (таймкод, шаг стрелками, экспорт)
+    float Duration = 20.0f;  // длина ролика в секундах
+    std::string Name = "My_Animation_Project";
+
+    // --- Содержимое ---
+    std::vector<Track> Tracks;
+    std::vector<ClipTrack> ClipTracks;
+    std::vector<Marker> Markers;
+    AudioTrack Audio;
+
+    // --- Дорожки свойств ---------------------------------------------------
+    Track* FindTrack(int targetId, Property prop);
+    const Track* FindTrack(int targetId, Property prop) const;
+    Track* TrackById(int id);
+    // Возвращает существующую дорожку или создаёт новую с нужным числом каналов.
+    Track& EnsureTrack(int targetId, Property prop);
+    void RemoveTrack(int id);
+    void RemoveTracksOf(int targetId); // при удалении сущности из сцены
+
+    // --- Дорожки клипов ----------------------------------------------------
+    ClipTrack* FindClipTrack(int targetId);
+    ClipTrack& EnsureClipTrack(int targetId);
+    void RemoveClipTrack(int id);
+
+    // --- Ключи -------------------------------------------------------------
+    // Ставит ключ по ТЕКУЩЕМУ состоянию сущности в сцене (кнопка «Key» и
+    // авто-ключ): читает свойство, кладёт значения во все каналы на время time.
+    // false — свойство к сущности неприменимо. Создаёт дорожку при необходимости.
+    bool KeyFromScene(Scene& scene, int targetId, Property prop, float time);
+
+    // Ставит ключи по текущему состоянию сразу для всех дорожек этой сущности
+    // (авто-ключ после перетаскивания гизмо трогает и позицию, и поворот, и
+    // масштаб — но только там, где дорожка УЖЕ есть, чтобы не засорять проект).
+    int KeyExistingTracks(Scene& scene, int targetId, float time);
+
+    // Убирает ключи на этом времени во всех каналах дорожки. Возвращает,
+    // сколько убрал.
+    int RemoveKeysAt(Track& track, float time);
+
+    // Есть ли ключ на этом времени хотя бы в одном канале дорожки.
+    bool HasKeyAt(const Track& track, float time) const;
+
+    // Ближайшее время ключа строго до/после указанного, среди ВСЕХ дорожек
+    // (кнопки «предыдущий/следующий ключ» на транспорте). Возвращает false,
+    // если ключей в эту сторону нет.
+    bool PrevKeyTime(float from, float& out) const;
+    bool NextKeyTime(float from, float& out) const;
+
+    // --- Применение к сцене -------------------------------------------------
+    // Пишет в сцену состояние на момент time: все не-заглушенные дорожки
+    // свойств + активные блоки клипов. Это ЕДИНСТВЕННЫЙ путь, которым документ
+    // влияет на мир, — и в интерактивной перемотке, и в проигрывании, и в
+    // покадровом рендере секвенции.
+    //
+    // seeking различает два режима для СКЕЛЕТНЫХ клипов (кривые от него не
+    // зависят — они и так считаются от абсолютного времени):
+    //   false — непрерывное проигрывание: клип ведётся движком (Animator::Update
+    //           тикает сам), работает кросс-фейд между блоками;
+    //   true  — головку перетащили/перепрыгнули/рендерим кадр секвенции: поза
+    //           ставится точно на нужное время через Animator::Seek, без
+    //           зависимости от того, какой кадр показывали до этого.
+    void Apply(Scene& scene, float time, bool seeking) const;
+
+    // Полная длительность контента (самый поздний ключ/блок/конец звука) —
+    // «подогнать длину ролика под содержимое».
+    float ContentEnd() const;
+
+    // Сбрасывает всё содержимое, сохраняя параметры монтажа.
+    void ClearContent();
+
+    // Есть ли вообще что применять (пустой документ не трогает сцену).
+    bool Empty() const { return Tracks.empty() && ClipTracks.empty(); }
+
+    int NextId() const { return m_nextId; }
+    void SetNextId(int id) { m_nextId = id; }
+    int TakeId() { return m_nextId++; }
+
+private:
+    int m_nextId = 1;
+};
+
+} // namespace d3d
