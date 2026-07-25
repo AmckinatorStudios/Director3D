@@ -4,6 +4,15 @@ on:
   push:
   pull_request:
 
+# Director 3D собирается только вместе с движком, а движок лежит в ДРУГОМ
+# репозитории. Токен раннера по умолчанию (GITHUB_TOKEN) выдаётся на текущий
+# репозиторий и к соседнему доступа не имеет — поэтому чекаут движка берёт
+# секрет SAGE_ENGINE_TOKEN, если он заведён (PAT или токен GitHub App с правом
+# чтения репозитория движка). Если движок публичный, хватит и GITHUB_TOKEN,
+# и секрет не нужен.
+env:
+  SAGE_ENGINE_REPO: AmckinatorStudios/SAGE-Engine
+
 jobs:
   build-and-test:
     name: Сборка + проверки (Linux)
@@ -14,15 +23,47 @@ jobs:
         with:
           path: Director3D
 
-      # Движок кладём СОСЕДНИМ каталогом — ровно так, как его ищет
-      # CMakeLists (../SAGE-Engine). Никаких особых путей в сборке.
-      - name: Checkout SAGE Engine
+      # Движок и инструмент разрабатываются ПАРНЫМИ ветками: правка API движка
+      # и её использование должны проверяться вместе, поэтому сначала пробуем
+      # ветку с тем же именем.
+      #
+      # На pull_request github.ref_name — это "N/merge", такой ветки в движке
+      # нет; исходное имя ветки PR лежит в github.head_ref.
+      - name: Checkout SAGE Engine (парная ветка)
+        id: engine_paired
         uses: actions/checkout@v4
-        with:
-          repository: AmckinatorStudios/SAGE-Engine
-          ref: ${{ github.ref_name }}
-          path: SAGE-Engine
         continue-on-error: true
+        with:
+          repository: ${{ env.SAGE_ENGINE_REPO }}
+          ref: ${{ github.head_ref || github.ref_name }}
+          path: SAGE-Engine
+          token: ${{ secrets.SAGE_ENGINE_TOKEN || secrets.GITHUB_TOKEN }}
+
+      # Парной ветки может не быть — правка только в инструменте. Тогда берём
+      # ветку движка по умолчанию.
+      - name: Checkout SAGE Engine (ветка по умолчанию)
+        if: steps.engine_paired.outcome != 'success'
+        uses: actions/checkout@v4
+        continue-on-error: true
+        with:
+          repository: ${{ env.SAGE_ENGINE_REPO }}
+          path: SAGE-Engine
+          token: ${{ secrets.SAGE_ENGINE_TOKEN || secrets.GITHUB_TOKEN }}
+
+      # Отдельный шаг с внятной причиной. Без него сборка падала бы ниже
+      # невнятной ошибкой FetchContent («could not read Username for
+      # https://github.com»), по которой не видно, что дело в правах доступа.
+      - name: Проверка, что движок на месте
+        run: |
+          if [ ! -f SAGE-Engine/engine/CMakeLists.txt ]; then
+            echo "::error::Не удалось получить ${SAGE_ENGINE_REPO}."
+            echo "::error::Если репозиторий движка приватный, заведите секрет SAGE_ENGINE_TOKEN"
+            echo "::error::(PAT или токен GitHub App с правом чтения ${SAGE_ENGINE_REPO})"
+            echo "::error::в Settings > Secrets and variables > Actions репозитория Director3D."
+            exit 1
+          fi
+          echo "Движок: $(git -C SAGE-Engine rev-parse --short HEAD)" \
+               "($(git -C SAGE-Engine rev-parse --abbrev-ref HEAD))"
 
       - name: Install build dependencies
         run: |
@@ -31,9 +72,13 @@ jobs:
             cmake g++ ninja-build libx11-dev libxrandr-dev libxinerama-dev \
             libxcursor-dev libxi-dev libgl1-mesa-dev xvfb
 
+      # Путь к движку задаём ЯВНО: полагаться в CI на поиск по соседним
+      # каталогам незачем, а при перекладке раскладки ошибка была бы неочевидной.
       - name: Configure
         working-directory: Director3D
-        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DSAGE_ENGINE_DIR="${GITHUB_WORKSPACE}/SAGE-Engine"
 
       - name: Build
         working-directory: Director3D
