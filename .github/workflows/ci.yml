@@ -70,7 +70,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             cmake g++ ninja-build libx11-dev libxrandr-dev libxinerama-dev \
-            libxcursor-dev libxi-dev libgl1-mesa-dev xvfb
+            libxcursor-dev libxi-dev libgl1-mesa-dev xvfb ffmpeg
 
       # Путь к движку задаём ЯВНО: полагаться в CI на поиск по соседним
       # каталогам незачем, а при перекладке раскладки ошибка была бы неочевидной.
@@ -90,10 +90,25 @@ jobs:
         run: ./build/Director3D --self-test
 
       # Сквозная проверка на живом GPU (программный OpenGL под xvfb):
-      # демо-анимация -> рендер секвенции PNG -> сверка файлов.
-      - name: Headless smoke test (render pipeline)
+      # демо-анимация -> рендер -> сверка результата. Гоняем ОБА пути вывода:
+      # ролик MP4 (основной) и секвенцию PNG (запасной, работает без ffmpeg).
+      - name: Headless smoke test (MP4)
         working-directory: Director3D/build
         run: |
-          D3D_WINDOW_WIDTH=800 D3D_WINDOW_HEIGHT=600 D3D_SMOKE_TEST=1 \
-            xvfb-run -a --server-args="-screen 0 800x600x24" ./Director3D | tee smoke.txt
-          grep -q "Сквозная проверка пройдена" smoke.txt
+          D3D_WINDOW_WIDTH=800 D3D_WINDOW_HEIGHT=600 \
+          D3D_SMOKE_TEST=1 D3D_SMOKE_FORMAT=mp4 \
+            xvfb-run -a --server-args="-screen 0 800x600x24" ./Director3D | tee smoke_mp4.txt
+          grep -q "Сквозная проверка пройдена" smoke_mp4.txt
+          # Файл должен быть не просто создан, а читаться как видео: оборванный
+          # кодировщик оставляет мусор, который grep по логу не поймает.
+          ffprobe -v error -select_streams v:0 -show_entries stream=codec_name,nb_frames \
+                  -of default=noprint_wrappers=1 smoke_render/smoke.mp4
+
+      - name: Headless smoke test (PNG sequence)
+        working-directory: Director3D/build
+        run: |
+          rm -rf smoke_render
+          D3D_WINDOW_WIDTH=800 D3D_WINDOW_HEIGHT=600 \
+          D3D_SMOKE_TEST=1 D3D_SMOKE_FORMAT=png \
+            xvfb-run -a --server-args="-screen 0 800x600x24" ./Director3D | tee smoke_png.txt
+          grep -q "Сквозная проверка пройдена" smoke_png.txt
