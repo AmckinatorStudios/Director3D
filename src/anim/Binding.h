@@ -36,6 +36,8 @@ enum class Property {
     CameraAperture,     // CineCamera.Aperture
     PostBloom,          // CineCamera.BloomIntensity
     PostVignette,       // CineCamera.VignetteAmount
+    PostMotionBlur,     // CineCamera.MotionBlurAmount
+    PostChromatic,      // CineCamera.ChromaticAmount
     Visibility,         // StageItem.Visible (0/1, ступенчато)
 };
 

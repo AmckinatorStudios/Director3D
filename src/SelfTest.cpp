@@ -243,6 +243,36 @@ void TestDocument() {
     const CameraComponent& cam = scene->Registry().get<CameraComponent>(scene->Get(cameraId).Entity());
     Check(cam.Fov <= 179.0f && cam.Fov >= 1.0f, "FOV зажат в рабочий диапазон");
 
+    // Киношные параметры камеры анимируются наравне с обычными: именно они
+    // управляют глубиной резкости, смазом и хроматической аберрацией в кадре.
+    for (Property prop : {Property::CameraFocusDistance, Property::CameraAperture,
+                          Property::PostMotionBlur, Property::PostChromatic}) {
+        Check(PropertyApplies(*scene, cameraId, prop), "камера принимает киношный параметр");
+        Check(!PropertyApplies(*scene, cubeId, prop), "не-камера киношный параметр не принимает");
+    }
+
+    // Перевод фокуса: ключи дистанции должны доезжать до компонента камеры,
+    // иначе анимация фокуса осталась бы «красивой кривой ни о чём».
+    AnimationDocument focusDoc;
+    Track& focusTrack = focusDoc.EnsureTrack(cameraId, Property::CameraFocusDistance);
+    focusTrack.Channels[0].SetKey(0.0f, 20.0f, Interp::Linear);
+    focusTrack.Channels[0].SetKey(2.0f, 5.0f, Interp::Linear);
+    focusDoc.Apply(*scene, 1.0f, true);
+    const CineCameraComponent& cine =
+        scene->Registry().get<CineCameraComponent>(scene->Get(cameraId).Entity());
+    CheckNear(cine.FocusDistance, 12.5f, 1e-3f, "дистанция фокуса анимируется");
+
+    // Значения эффектов зажимаются в рабочий диапазон: кривая легко уводит
+    // значение за края, а отрицательный смаз или диафрагма — это мусор в шейдер.
+    AnimationDocument clampDoc;
+    Track& mb = clampDoc.EnsureTrack(cameraId, Property::PostMotionBlur);
+    mb.Channels[0].SetKey(0.0f, 5.0f, Interp::Linear);
+    Track& ap = clampDoc.EnsureTrack(cameraId, Property::CameraAperture);
+    ap.Channels[0].SetKey(0.0f, -3.0f, Interp::Linear);
+    clampDoc.Apply(*scene, 0.0f, true);
+    Check(cine.MotionBlurAmount <= 1.0f, "сила смаза зажата сверху");
+    Check(cine.Aperture >= 0.7f, "диафрагма зажата снизу");
+
     // Поиск соседних ключей — кнопки «предыдущий/следующий ключ».
     AnimationDocument nav;
     Track& navTrack = nav.EnsureTrack(cubeId, Property::Position);

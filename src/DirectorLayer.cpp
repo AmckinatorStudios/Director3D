@@ -227,6 +227,14 @@ void DirectorLayer::BuildDemoAnimation() {
         Track& fov = m_doc.EnsureTrack(camera, Property::CameraFov);
         fov.Channels[0].SetKey(0.0f, 55.0f, Interp::EaseInOut);
         fov.Channels[0].SetKey(6.0f, 42.0f, Interp::EaseInOut);
+
+        // Перевод фокуса: сначала резок дальний план, затем фокус приходит на
+        // объект и к концу снова уходит вглубь.
+        Track& focus = m_doc.EnsureTrack(camera, Property::CameraFocusDistance);
+        focus.Channels[0].SetKey(0.0f, 18.0f, Interp::EaseInOut);
+        focus.Channels[0].SetKey(2.0f, 7.5f, Interp::EaseInOut);
+        focus.Channels[0].SetKey(4.0f, 7.5f, Interp::EaseInOut);
+        focus.Channels[0].SetKey(6.0f, 16.0f, Interp::EaseInOut);
     }
 
     // Свет: пульсация интенсивности.
@@ -235,6 +243,27 @@ void DirectorLayer::BuildDemoAnimation() {
         intensity.Channels[0].SetKey(0.0f, 1.2f, Interp::Smooth);
         intensity.Channels[0].SetKey(3.0f, 3.0f, Interp::Smooth);
         intensity.Channels[0].SetKey(6.0f, 1.2f, Interp::Smooth);
+    }
+
+    // Включаем киношные эффекты на активной камере: демонстрация должна
+    // показывать не только движение, но и то, как выглядит кадр.
+    if (camera >= 0) {
+        GameObject cam = m_scene->Get(camera);
+        if (cam.Valid()) {
+            CineCameraComponent& cine =
+                m_scene->Registry().get_or_emplace<CineCameraComponent>(cam.Entity());
+            cine.DepthOfField = true;
+            // Автофокус выключен намеренно: ниже дистанция фокуса КЛЮЧУЕТСЯ.
+            // Перевод фокуса с одного плана на другой — классический приём, и
+            // заодно это проверка того, что анимируемое свойство действительно
+            // управляет эффектом, а не просто лежит в файле.
+            cine.AutoFocus = false;
+            cine.Aperture = 2.2f;       // умеренно открытая: фон мягкий, объект резкий
+            cine.MotionBlur = true;
+            cine.MotionBlurAmount = 0.45f;
+            cine.ChromaticAberration = true;
+            cine.ChromaticAmount = 0.35f;
+        }
     }
 
     m_doc.Markers.push_back(Marker{"Пик", 1.5f, 0xFF3FC8E8});
@@ -686,6 +715,11 @@ void DirectorLayer::SetCurrentTime(float seconds) {
     m_playback.SetTime(Playback::SnapToFrame(seconds, m_doc.Fps), m_doc.Duration);
     ApplyDocument(true);
     m_playback.ClearSeeking();
+    // Перемотка — разрыв непрерывности движения. Без сброса истории смаз
+    // движения сравнил бы новый кадр с камерой из совсем другого места ролика
+    // и размазал бы картинку через весь экран. На экспорт это не влияет: там
+    // кадры идут подряд и SetCurrentTime не вызывается.
+    m_renderer.ResetMotionHistory();
 }
 
 void DirectorLayer::StepFrames(int frames) {
@@ -752,6 +786,7 @@ void DirectorLayer::RestoreSnapshot(const std::string& snapshot) {
     m_scene = std::move(restored);
     ValidateSelection();
     ApplyDocument(true);
+    m_renderer.ResetMotionHistory(); // сцену подменили — старая камера не в счёт
     m_dirty = true;
 }
 

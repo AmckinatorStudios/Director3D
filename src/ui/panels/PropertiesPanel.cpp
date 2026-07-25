@@ -171,7 +171,8 @@ bool PropertiesPanel::DrawEffectRow(DirectorHost& host, const char* label, bool*
 
     // Ромб есть только у эффектов, которые реально анимируются документом;
     // остальным рисуем пустое место, чтобы столбик не «прыгал».
-    const bool animatable = (prop == Property::PostBloom || prop == Property::PostVignette);
+    const bool animatable = (prop == Property::PostBloom || prop == Property::PostVignette ||
+                             prop == Property::PostMotionBlur || prop == Property::PostChromatic);
     DrawKeyDiamond(host, prop, animatable);
     ImGui::PopID();
     return changed;
@@ -302,17 +303,18 @@ void PropertiesPanel::Draw(DirectorHost& host) {
             edited |= DrawEffectRow(host, "Bloom", &cine.Bloom, &cine.BloomIntensity,
                                     Property::PostBloom, 0.0f, 2.0f);
             edited |= DrawEffectRow(host, "Motion Blur", &cine.MotionBlur, &cine.MotionBlurAmount,
-                                    Property::PostBloom, 0.0f, 1.0f);
+                                    Property::PostMotionBlur, 0.0f, 1.0f);
             edited |= DrawEffectRow(host, "Color Grading", &cine.ColorGrading, &cine.ColorGradingAmount,
                                     Property::PostBloom, 0.0f, 2.0f);
             edited |= DrawEffectRow(host, "Vignette", &cine.Vignette, &cine.VignetteAmount,
                                     Property::PostVignette, 0.0f, 1.0f);
             edited |= DrawEffectRow(host, "Chromatic Aberration", &cine.ChromaticAberration,
-                                    &cine.ChromaticAmount, Property::PostBloom, 0.0f, 1.0f);
+                                    &cine.ChromaticAmount, Property::PostChromatic, 0.0f, 1.0f);
             if (edited) host.NotifyObjectEdited(id);
-            if (!cine.MotionBlur && !simple) {
-                ImGui::TextDisabled("Motion Blur и Chromatic Aberration записываются в проект,");
-                ImGui::TextDisabled("но пока не влияют на превью — цепочка эффектов движка их не имеет.");
+            if (!simple) {
+                ImGui::Spacing();
+                ImGui::TextDisabled("Motion Blur — камерный: смазывает движение и поворот");
+                ImGui::TextDisabled("камеры. Смаз от движения самих объектов не считается.");
             }
         }
     }

@@ -31,6 +31,8 @@ const std::vector<PropertyInfo> kTable = {
     {Property::CameraAperture,      "aperture",       "Aperture",        1, {"", "", ""},    {kScalar, 0, 0},          false},
     {Property::PostBloom,           "postBloom",      "Bloom",           1, {"", "", ""},    {kScalar, 0, 0},          false},
     {Property::PostVignette,        "postVignette",   "Vignette",        1, {"", "", ""},    {kScalar, 0, 0},          false},
+    {Property::PostMotionBlur,      "postMotionBlur", "Motion Blur",     1, {"", "", ""},    {kScalar, 0, 0},          false},
+    {Property::PostChromatic,       "postChromatic",  "Chromatic Ab.",   1, {"", "", ""},    {kScalar, 0, 0},          false},
     {Property::Visibility,          "visibility",     "Visibility",      1, {"", "", ""},    {kScalar, 0, 0},          true},
 };
 
@@ -80,6 +82,8 @@ bool PropertyApplies(Scene& scene, int entityId, Property prop) {
         case Property::CameraAperture:
         case Property::PostBloom:
         case Property::PostVignette:
+        case Property::PostMotionBlur:
+        case Property::PostChromatic:
             // Киношные параметры живут на камере: компонент навешивается
             // Director 3D при создании камеры, но проект мог прийти и без него.
             return reg.all_of<CameraComponent>(e);
@@ -139,17 +143,23 @@ bool ReadProperty(Scene& scene, int entityId, Property prop, float* values) {
         case Property::CameraFocusDistance:
         case Property::CameraAperture:
         case Property::PostBloom:
-        case Property::PostVignette: {
+        case Property::PostVignette:
+        case Property::PostMotionBlur:
+        case Property::PostChromatic: {
             // Компонента может не быть (сцена из .sage без Director-данных) —
             // тогда отдаём дефолты, а не «нет свойства»: ключ поставится, и
             // при записи компонент создастся.
             const CineCameraComponent* cine = reg.try_get<CineCameraComponent>(e);
             CineCameraComponent fallback;
             const CineCameraComponent& c = cine ? *cine : fallback;
-            values[0] = prop == Property::CameraFocusDistance ? c.FocusDistance
-                      : prop == Property::CameraAperture      ? c.Aperture
-                      : prop == Property::PostBloom           ? c.BloomIntensity
-                                                              : c.VignetteAmount;
+            switch (prop) {
+                case Property::CameraFocusDistance: values[0] = c.FocusDistance; break;
+                case Property::CameraAperture:      values[0] = c.Aperture; break;
+                case Property::PostBloom:           values[0] = c.BloomIntensity; break;
+                case Property::PostVignette:        values[0] = c.VignetteAmount; break;
+                case Property::PostMotionBlur:      values[0] = c.MotionBlurAmount; break;
+                default:                            values[0] = c.ChromaticAmount; break;
+            }
             return reg.all_of<CameraComponent>(e);
         }
         case Property::Visibility: {
@@ -214,14 +224,18 @@ bool WriteProperty(Scene& scene, int entityId, Property prop, const float* value
         case Property::CameraFocusDistance:
         case Property::CameraAperture:
         case Property::PostBloom:
-        case Property::PostVignette: {
+        case Property::PostVignette:
+        case Property::PostMotionBlur:
+        case Property::PostChromatic: {
             if (!reg.all_of<CameraComponent>(e)) return false;
             CineCameraComponent& c = reg.get_or_emplace<CineCameraComponent>(e);
             switch (prop) {
                 case Property::CameraFocusDistance: c.FocusDistance = glm::max(values[0], 0.01f); break;
                 case Property::CameraAperture:      c.Aperture = glm::clamp(values[0], 0.7f, 32.0f); break;
                 case Property::PostBloom:           c.BloomIntensity = glm::clamp(values[0], 0.0f, 4.0f); break;
-                default:                            c.VignetteAmount = glm::clamp(values[0], 0.0f, 1.0f); break;
+                case Property::PostVignette:        c.VignetteAmount = glm::clamp(values[0], 0.0f, 1.0f); break;
+                case Property::PostMotionBlur:      c.MotionBlurAmount = glm::clamp(values[0], 0.0f, 1.0f); break;
+                default:                            c.ChromaticAmount = glm::clamp(values[0], 0.0f, 1.0f); break;
             }
             return true;
         }
