@@ -204,8 +204,10 @@ void AssetsPanel::Draw(DirectorHost& host) {
     ImGui::Begin("Assets");
 
     if (ImGui::BeginTabBar("##assetTabs")) {
-        if (ImGui::BeginTabItem("Assets")) { m_tab = 0; ImGui::EndTabItem(); }
-        if (ImGui::BeginTabItem("Scene Presets")) { m_tab = 1; ImGui::EndTabItem(); }
+        // «Файлы», а не «Assets»: вкладка дока над ними уже называется Assets,
+        // и одинаковое слово двумя строками подряд читается как сбой раскладки.
+        if (ImGui::BeginTabItem("Файлы")) { m_tab = 0; ImGui::EndTabItem(); }
+        if (ImGui::BeginTabItem("Заготовки")) { m_tab = 1; ImGui::EndTabItem(); }
         ImGui::EndTabBar();
     }
 
@@ -280,30 +282,67 @@ void AssetsPanel::Draw(DirectorHost& host) {
     }
     ImGui::SameLine();
     {
+        // Ползунок размера плиток прячем на узкой панели. Он второстепенный, а
+        // отнимал сто пикселей у поиска — в итоге не помещалось ни поле ввода
+        // (от подсказки оставалось «Searc»), ни сам ползунок, который без
+        // подписи выглядел просто сломанным виджетом.
+        const float avail = ImGui::GetContentRegionAvail().x;
+        const bool showTileSlider = avail > 300.0f;
+        const float searchWidth = avail - (showTileSlider ? 116.0f : 0.0f);
+
         const ImVec2 pos = ImGui::GetCursorScreenPos();
-        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 120.0f);
+        ImGui::SetNextItemWidth(searchWidth);
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(24, 4));
-        ImGui::InputTextWithHint("##assetSearch", "Search assets...", &m_filter);
+        ImGui::InputTextWithHint("##assetSearch", "Поиск...", &m_filter);
         ImGui::PopStyleVar();
         Icons::Draw(ImGui::GetWindowDrawList(), Icon::Search,
                     ImVec2(pos.x + 13.0f, pos.y + ImGui::GetFrameHeight() * 0.5f),
                     13.0f, Theme::Colors::TextFaint);
-    }
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(100.0f);
-    ImGui::SliderFloat("##tile", &m_tileSize, 48.0f, 140.0f, "");
 
-    ImGui::TextDisabled("%s", host.AssetsDir().string().c_str());
+        if (showTileSlider) {
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(100.0f);
+            ImGui::SliderFloat("##tile", &m_tileSize, 48.0f, 140.0f, "размер");
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Размер плиток");
+        }
+    }
+
+    // Путь укорачивается СЛЕВА: конец пути (текущая папка) важнее начала, а
+    // целиком он в панель шириной в четверть экрана не помещается никогда.
+    {
+        const std::string full = host.AssetsDir().string();
+        const float maxWidth = ImGui::GetContentRegionAvail().x;
+        std::string shown = full;
+        if (ImGui::CalcTextSize(full.c_str()).x > maxWidth) {
+            size_t cut = 0;
+            while (cut < full.size() &&
+                   ImGui::CalcTextSize(("…" + full.substr(cut)).c_str()).x > maxWidth) {
+                ++cut;
+            }
+            shown = "…" + full.substr(cut);
+        }
+        ImGui::TextDisabled("%s", shown.c_str());
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", full.c_str());
+    }
     ImGui::Separator();
 
     // --- Дерево слева, плитки справа ---
-    const float treeWidth = std::min(190.0f, ImGui::GetContentRegionAvail().x * 0.4f);
-    ImGui::BeginChild("##assetTree", ImVec2(treeWidth, -ImGui::GetFrameHeightWithSpacing()), true);
-    DrawTree(host, host.AssetsDir(), 0);
-    if (m_entries.empty()) ImGui::TextDisabled("Нет вложенных папок");
-    ImGui::EndChild();
-
-    ImGui::SameLine();
+    // Дереву нужна не доля, а минимум под имя папки: при 40% от узкой панели
+    // оно получало ~88 пикселей, и «.github» обрезалось на середине. Ниже 130
+    // не опускаемся, но и больше половины панели не забираем.
+    // На узкой панели дерево ПРЯЧЕТСЯ целиком. Делить двести пикселей между
+    // деревом и сеткой бессмысленно: не помещается ни одно, ни другое. Ходить
+    // по папкам можно и сеткой — двойным щелчком внутрь, кнопкой слева наверх.
+    const float assetsAvail = ImGui::GetContentRegionAvail().x;
+    const bool showTree = assetsAvail >= 320.0f;
+    if (showTree) {
+        const float treeWidth = std::clamp(assetsAvail * 0.45f, 130.0f, 190.0f);
+        ImGui::BeginChild("##assetTree", ImVec2(treeWidth, -ImGui::GetFrameHeightWithSpacing()), true);
+        DrawTree(host, host.AssetsDir(), 0);
+        if (m_entries.empty()) ImGui::TextDisabled("Нет вложенных папок");
+        ImGui::EndChild();
+        ImGui::SameLine();
+    }
     ImGui::BeginChild("##assetGrid", ImVec2(0, -ImGui::GetFrameHeightWithSpacing()), true);
     DrawGrid(host);
     ImGui::EndChild();

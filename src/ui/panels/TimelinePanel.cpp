@@ -27,7 +27,13 @@ namespace {
 // Ширина колонки с именами дорожек. Совпадает у линейки, дорожек и графа —
 // именно она делает так, что имя, ключи и кривая одной дорожки лежат на одной
 // строке.
-constexpr float kNameColumn = 210.0f;
+// Колонка имён. 210 не хватало: под подпись оставалось ~70 пикселей (46 —
+// отступ под треугольник и значок, 78 — кнопки ключа/звука/замка справа), и
+// «bone2 · Bone Rotation» обрезалось до «bone2 · Bor». Костные и морф-дорожки
+// несут в подписи ещё и имя кости или цели, поэтому места нужно больше.
+constexpr float kNameColumn = 300.0f;
+// Ширина блока кнопок в конце колонки имён — она же граница обрезки подписи.
+constexpr float kTrackButtonsWidth = 78.0f;
 constexpr float kRulerHeight = 22.0f;
 constexpr float kRowHeight = 22.0f;
 
@@ -106,61 +112,19 @@ void TimelinePanel::DrawTransport(DirectorHost& host) {
 
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4, 4));
 
-    // Слева — зум таймлайна: он живёт здесь, потому что относится ко всему
-    // времени ролика, а не к конкретной вкладке.
-    if (Icons::IconButton("zoomAll", Icon::Search, "Показать весь ролик")) {
-        m_viewStart = 0.0f;
-        m_viewEnd = doc.Duration;
-    }
+    // Ряд делится на три блока с АБСОЛЮТНЫМИ позициями. Раньше центр и правый
+    // край выставлялись через SameLine(0, отступ), то есть отсчитывались от
+    // конца предыдущего элемента: стоило панели стать уже — и таймкод с частотой
+    // кадров уезжали за край, оставляя от транспорта одну лупу. Абсолютная
+    // раскладка от ширины строки этого не допускает.
+    const float rowX = ImGui::GetCursorPosX();
+    const float rowWidth = ImGui::GetContentRegionAvail().x;
 
-    // По центру — кнопки перемотки и проигрывания.
-    const float groupWidth = 7.0f * 30.0f;
-    const float avail = ImGui::GetContentRegionAvail().x;
-    ImGui::SameLine(0.0f, std::max(6.0f, (avail - groupWidth) * 0.5f - 40.0f));
+    constexpr float kLeftWidth = 210.0f;   // таймкод + частота кадров
+    constexpr float kCenterWidth = 226.0f; // семь кнопок + цикл
+    constexpr float kRightWidth = 30.0f;   // «весь ролик»
 
-    if (Icons::IconButton("first", Icon::SkipStart, "В начало (Home)", false, true, 26.0f)) {
-        host.SetCurrentTime(0.0f);
-    }
-    ImGui::SameLine();
-    if (Icons::IconButton("prevKey", Icon::PrevKey, "Предыдущий ключ (,)", false, true, 26.0f)) {
-        float t = 0.0f;
-        if (doc.PrevKeyTime(host.CurrentTime(), t)) host.SetCurrentTime(t);
-        else host.SetCurrentTime(0.0f);
-    }
-    ImGui::SameLine();
-    if (Icons::IconButton("stepBack", Icon::StepBack, "Кадр назад (←)", false, true, 26.0f)) {
-        host.StepFrames(-1);
-    }
-    ImGui::SameLine();
-    if (Icons::IconButton("play", transport.Playing() ? Icon::Pause : Icon::Play,
-                          "Проигрывание (Пробел)", transport.Playing(), true, 30.0f)) {
-        transport.TogglePlay();
-    }
-    ImGui::SameLine();
-    if (Icons::IconButton("stepFwd", Icon::StepForward, "Кадр вперёд (→)", false, true, 26.0f)) {
-        host.StepFrames(1);
-    }
-    ImGui::SameLine();
-    if (Icons::IconButton("nextKey", Icon::NextKey, "Следующий ключ (.)", false, true, 26.0f)) {
-        float t = 0.0f;
-        if (doc.NextKeyTime(host.CurrentTime(), t)) host.SetCurrentTime(t);
-        else host.SetCurrentTime(doc.Duration);
-    }
-    ImGui::SameLine();
-    if (Icons::IconButton("last", Icon::SkipEnd, "В конец (End)", false, true, 26.0f)) {
-        host.SetCurrentTime(doc.Duration);
-    }
-    ImGui::SameLine(0.0f, 10.0f);
-    if (Icons::IconButton("loop", Icon::Loop, "Зациклить проигрывание (L)", transport.Loop, true, 26.0f)) {
-        transport.Loop = !transport.Loop;
-    }
-
-    // Справа — таймкод и частота кадров.
-    const float rightWidth = 210.0f;
-    const float rest = ImGui::GetContentRegionAvail().x;
-    if (rest > rightWidth) ImGui::SameLine(0.0f, rest - rightWidth);
-    else ImGui::SameLine();
-
+    // --- Слева: таймкод и частота кадров ---
     // Таймкод — редактируемый: набрать «00:00:04:12» точнее, чем целиться мышью.
     char timecode[32];
     std::snprintf(timecode, sizeof(timecode), "%s",
@@ -200,7 +164,63 @@ void TimelinePanel::DrawTransport(DirectorHost& host) {
         }
         ImGui::EndCombo();
     }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Частота кадров ролика.\nКлючи не сдвигаются: время хранится в секундах.");
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Частота кадров ролика.\nКлючи не сдвигаются: время хранится в секундах.");
+    }
+
+    // --- По центру: перемотка и проигрывание ---
+    // Центр не заезжает на левый блок даже на узкой панели: лучше сдвинутые
+    // вправо кнопки, чем кнопки поверх таймкода.
+    const float centerX = ImMax(rowX + kLeftWidth + 8.0f,
+                                rowX + (rowWidth - kCenterWidth) * 0.5f);
+    ImGui::SameLine(centerX);
+
+    if (Icons::IconButton("first", Icon::SkipStart, "В начало (Home)", false, true, 26.0f)) {
+        host.SetCurrentTime(0.0f);
+    }
+    ImGui::SameLine();
+    if (Icons::IconButton("prevKey", Icon::PrevKey, "Предыдущий ключ (,)", false, true, 26.0f)) {
+        float t = 0.0f;
+        if (doc.PrevKeyTime(host.CurrentTime(), t)) host.SetCurrentTime(t);
+        else host.SetCurrentTime(0.0f);
+    }
+    ImGui::SameLine();
+    if (Icons::IconButton("stepBack", Icon::StepBack, "Кадр назад (←)", false, true, 26.0f)) {
+        host.StepFrames(-1);
+    }
+    ImGui::SameLine();
+    if (Icons::IconButton("play", transport.Playing() ? Icon::Pause : Icon::Play,
+                          "Проигрывание (Пробел)", transport.Playing(), true, 30.0f)) {
+        transport.TogglePlay();
+    }
+    ImGui::SameLine();
+    if (Icons::IconButton("stepFwd", Icon::StepForward, "Кадр вперёд (→)", false, true, 26.0f)) {
+        host.StepFrames(1);
+    }
+    ImGui::SameLine();
+    if (Icons::IconButton("nextKey", Icon::NextKey, "Следующий ключ (.)", false, true, 26.0f)) {
+        float t = 0.0f;
+        if (doc.NextKeyTime(host.CurrentTime(), t)) host.SetCurrentTime(t);
+        else host.SetCurrentTime(doc.Duration);
+    }
+    ImGui::SameLine();
+    if (Icons::IconButton("last", Icon::SkipEnd, "В конец (End)", false, true, 26.0f)) {
+        host.SetCurrentTime(doc.Duration);
+    }
+    ImGui::SameLine(0.0f, 10.0f);
+    if (Icons::IconButton("loop", Icon::Loop, "Зациклить проигрывание (L)", transport.Loop, true,
+                          26.0f)) {
+        transport.Loop = !transport.Loop;
+    }
+
+    // --- Справа: показать весь ролик ---
+    if (rowWidth > kLeftWidth + kCenterWidth + kRightWidth + 24.0f) {
+        ImGui::SameLine(rowX + rowWidth - kRightWidth);
+        if (Icons::IconButton("zoomAll", Icon::Search, "Показать весь ролик", false, true, 26.0f)) {
+            m_viewStart = 0.0f;
+            m_viewEnd = doc.Duration;
+        }
+    }
 
     ImGui::PopStyleVar();
 }
@@ -441,11 +461,22 @@ float TimelinePanel::DrawTrackHeader(DirectorHost& host, Track& track, const Lay
     } else {
         std::snprintf(label, sizeof(label), "%s", info.Label);
     }
-    dl->AddText(ImVec2(rowA.x + 46.0f, y + 3.0f),
-                track.Muted ? Theme::Colors::TextFaint : Theme::Colors::Text, label);
+    // Подпись ОБРЕЗАЕТСЯ по свободному месту в колонке имён. Без обрезки
+    // «bone2 · Bone Rotation» уезжал под кнопки справа и дальше на сами дорожки:
+    // читать нельзя ни подпись, ни то, что она перекрыла. AddText с clipRect
+    // режет по границе, а не по символам, поэтому обрезанное слово видно как
+    // обрезанное — и понятно, что имя длиннее.
+    {
+        const ImVec2 textPos(rowA.x + 46.0f, y + 3.0f);
+        // 78 — ширина блока кнопок (ключ/звук/замок), 8 — зазор до него.
+        const ImVec4 clip(textPos.x, y, rowA.x + l.TrackX - kTrackButtonsWidth - 8.0f, y + l.RowH);
+        dl->AddText(nullptr, 0.0f, textPos,
+                    track.Muted ? Theme::Colors::TextFaint : Theme::Colors::Text, label, nullptr,
+                    0.0f, &clip);
+    }
 
     // Кнопки справа в колонке имён: ключ на текущем кадре, mute, lock.
-    ImGui::SetCursorScreenPos(ImVec2(rowA.x + l.TrackX - 78.0f, y + 2.0f));
+    ImGui::SetCursorScreenPos(ImVec2(rowA.x + l.TrackX - kTrackButtonsWidth, y + 2.0f));
     const bool hasKey = host.Document().HasKeyAt(track, host.CurrentTime());
     if (Icons::IconButton("key", Icon::Key,
                           hasKey ? "Убрать ключ на этом кадре" : "Поставить ключ на этом кадре",
@@ -1137,6 +1168,12 @@ void TimelinePanel::Draw(DirectorHost& host) {
 
     AnimationDocument& doc = host.Document();
     const bool simple = host.SimpleMode();
+
+    // --- Транспорт: первая строка панели ---
+    // Он относится ко всем трём представлениям сразу (Timeline/Graph/Dope),
+    // поэтому стоит НАД вкладками, а не внутри одной из них.
+    DrawTransport(host);
+    ImGui::Separator();
 
     // --- Вкладки представлений ---
     if (simple) {

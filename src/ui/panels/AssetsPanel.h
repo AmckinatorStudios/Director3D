@@ -41,7 +41,10 @@ private:
     std::filesystem::path m_shownDir;
     std::string m_filter;
     bool m_dirty = true;
-    float m_tileSize = 84.0f;
+    // 84 пикселя на плитку — это одна колонка в панели шириной в пятую часть
+    // экрана: сетка перестаёт быть сеткой. 64 дают две-три колонки и остаются
+    // читаемыми; кому нужно крупнее — ползунок рядом с поиском.
+    float m_tileSize = 64.0f;
     int m_tab = 0; // 0 — Assets, 1 — Scene Presets
 };
 

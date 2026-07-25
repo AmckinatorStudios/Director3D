@@ -1,6 +1,7 @@
 #include "ui/Icons.h"
 
 #include <cmath>
+#include <unordered_map>
 
 #include "imgui_internal.h" // ImGui::ItemAdd/ItemSize — своя геометрия у кнопок
 #include "ui/Theme.h"
@@ -13,35 +14,88 @@ constexpr float kPi = 3.14159265f;
 
 // Все примитивы работают в нормированных координатах [-0.5, 0.5] вокруг центра:
 // иконка описывается один раз и масштабируется под любую кнопку.
+// Pen работает в двух режимах. С Dl != nullptr он рисует; с Dl == nullptr
+// только ЗАМЕРЯЕТ рамку «чернил» иконки, ничего не выводя.
+//
+// Замер нужен, чтобы центрировать иконки автоматически. Иконки описаны от руки,
+// и «чернила» у них расположены в квадрате по-разному: у лупы и стрелок отмены
+// рисунок жмётся кверху, у папки — книзу. На панели инструментов это читается
+// как «иконки скачут», и подгонять координаты каждой из трёх десятков вручную —
+// работа, которую придётся повторять после любой правки и при каждой новой
+// иконке. Проще посчитать рамку один раз и сдвинуть.
 struct Pen {
-    ImDrawList* Dl;
-    ImVec2 C;
-    float S;
-    ImU32 Color;
-    float Thick;
+    ImDrawList* Dl = nullptr;
+    ImVec2 C{0.0f, 0.0f};
+    float S = 1.0f;
+    ImU32 Color = 0;
+    float Thick = 1.0f;
+    // Сдвиг, выравнивающий чернила по центру рамки (считается замером).
+    float OffX = 0.0f, OffY = 0.0f;
+    // Рамка чернил в нормированных координатах — заполняется в режиме замера.
+    mutable float MinX = 1e9f, MinY = 1e9f, MaxX = -1e9f, MaxY = -1e9f;
 
-    ImVec2 P(float x, float y) const { return ImVec2(C.x + x * S, C.y + y * S); }
+    void Track(float x, float y, float pad = 0.0f) const {
+        MinX = ImMin(MinX, x - pad); MaxX = ImMax(MaxX, x + pad);
+        MinY = ImMin(MinY, y - pad); MaxY = ImMax(MaxY, y + pad);
+    }
+    ImVec2 P(float x, float y) const {
+        Track(x, y);
+        return ImVec2(C.x + (x + OffX) * S, C.y + (y + OffY) * S);
+    }
     void Line(float x0, float y0, float x1, float y1) const {
-        Dl->AddLine(P(x0, y0), P(x1, y1), Color, Thick);
+        const ImVec2 a = P(x0, y0), b = P(x1, y1);
+        if (Dl) Dl->AddLine(a, b, Color, Thick);
     }
     void Rect(float x0, float y0, float x1, float y1, float rounding = 0.0f) const {
-        Dl->AddRect(P(x0, y0), P(x1, y1), Color, rounding * S, 0, Thick);
+        const ImVec2 a = P(x0, y0), b = P(x1, y1);
+        if (Dl) Dl->AddRect(a, b, Color, rounding * S, 0, Thick);
     }
     void RectFilled(float x0, float y0, float x1, float y1, float rounding = 0.0f) const {
-        Dl->AddRectFilled(P(x0, y0), P(x1, y1), Color, rounding * S);
+        const ImVec2 a = P(x0, y0), b = P(x1, y1);
+        if (Dl) Dl->AddRectFilled(a, b, Color, rounding * S);
     }
     void Circle(float x, float y, float r, int seg = 16) const {
-        Dl->AddCircle(P(x, y), r * S, Color, seg, Thick);
+        Track(x, y, r);
+        const ImVec2 c = P(x, y);
+        if (Dl) Dl->AddCircle(c, r * S, Color, seg, Thick);
     }
     void CircleFilled(float x, float y, float r, int seg = 16) const {
-        Dl->AddCircleFilled(P(x, y), r * S, Color, seg);
+        Track(x, y, r);
+        const ImVec2 c = P(x, y);
+        if (Dl) Dl->AddCircleFilled(c, r * S, Color, seg);
     }
     void Tri(float x0, float y0, float x1, float y1, float x2, float y2) const {
-        Dl->AddTriangleFilled(P(x0, y0), P(x1, y1), P(x2, y2), Color);
+        const ImVec2 a = P(x0, y0), b = P(x1, y1), c = P(x2, y2);
+        if (Dl) Dl->AddTriangleFilled(a, b, c, Color);
+    }
+    void Quad(float x0, float y0, float x1, float y1, float x2, float y2, float x3,
+              float y3) const {
+        const ImVec2 a = P(x0, y0), b = P(x1, y1), c = P(x2, y2), d = P(x3, y3);
+        if (Dl) Dl->AddQuadFilled(a, b, c, d, Color);
+    }
+    // Кубическая кривая по четырём точкам (волна, дуги переходов).
+    void Bezier(float x0, float y0, float x1, float y1, float x2, float y2, float x3,
+                float y3) const {
+        const ImVec2 a = P(x0, y0), b = P(x1, y1), c = P(x2, y2), d = P(x3, y3);
+        if (!Dl) return;
+        Dl->PathLineTo(a);
+        Dl->PathBezierCubicCurveTo(b, c, d, 20);
+        Dl->PathStroke(Color, 0, Thick);
     }
     // Дуга по углам в градусах (0° — вправо, отсчёт по часовой в экранных координатах).
     void Arc(float x, float y, float r, float a0Deg, float a1Deg) const {
-        Dl->PathArcTo(P(x, y), r * S, a0Deg * kPi / 180.0f, a1Deg * kPi / 180.0f, 24);
+        // Замеряем дугу ПО ТОЧКАМ, а не по описанной окружности. Разница
+        // принципиальная: у стрелок отмены рисуется верхняя треть круга, и
+        // рамка целой окружности вдвое выше настоящих чернил — иконка после
+        // такого «центрирования» уезжала вверх ровно на эту ошибку.
+        const int steps = 16;
+        for (int i = 0; i <= steps; ++i) {
+            const float a = (a0Deg + (a1Deg - a0Deg) * (float)i / (float)steps) * kPi / 180.0f;
+            Track(x + std::cos(a) * r, y + std::sin(a) * r);
+        }
+        const ImVec2 c = ImVec2(C.x + (x + OffX) * S, C.y + (y + OffY) * S);
+        if (!Dl) return;
+        Dl->PathArcTo(c, r * S, a0Deg * kPi / 180.0f, a1Deg * kPi / 180.0f, 24);
         Dl->PathStroke(Color, 0, Thick);
     }
 };
@@ -244,15 +298,15 @@ void DrawIcon(const Pen& p, Icon icon) {
             break;
         case Icon::PrevKey:
             p.RectFilled(-0.30f, -0.26f, -0.22f, 0.26f);
-            p.Dl->AddQuadFilled(p.P(0.02f, -0.24f), p.P(0.26f, 0.0f), p.P(0.02f, 0.24f), p.P(-0.22f, 0.0f), p.Color);
+            p.Quad(0.02f, -0.24f, 0.26f, 0.0f, 0.02f, 0.24f, -0.22f, 0.0f);
             break;
         case Icon::NextKey:
             p.RectFilled(0.22f, -0.26f, 0.30f, 0.26f);
-            p.Dl->AddQuadFilled(p.P(-0.02f, -0.24f), p.P(0.22f, 0.0f), p.P(-0.02f, 0.24f), p.P(-0.26f, 0.0f), p.Color);
+            p.Quad(-0.02f, -0.24f, 0.22f, 0.0f, -0.02f, 0.24f, -0.26f, 0.0f);
             break;
 
         case Icon::Key: // ромб ключа
-            p.Dl->AddQuadFilled(p.P(0.0f, -0.30f), p.P(0.30f, 0.0f), p.P(0.0f, 0.30f), p.P(-0.30f, 0.0f), p.Color);
+            p.Quad(0.0f, -0.30f, 0.30f, 0.0f, 0.0f, 0.30f, -0.30f, 0.0f);
             break;
 
         case Icon::Loop:
@@ -309,11 +363,9 @@ void DrawIcon(const Pen& p, Icon icon) {
             break;
 
         case Icon::Curve: // S-образная кривая с ключами
-            p.Dl->PathLineTo(p.P(-0.34f, 0.26f));
-            p.Dl->PathBezierCubicCurveTo(p.P(-0.10f, 0.26f), p.P(0.10f, -0.26f), p.P(0.34f, -0.26f), 20);
-            p.Dl->PathStroke(p.Color, 0, p.Thick);
-            p.Dl->AddQuadFilled(p.P(-0.34f, 0.16f), p.P(-0.24f, 0.26f), p.P(-0.34f, 0.36f), p.P(-0.44f, 0.26f), p.Color);
-            p.Dl->AddQuadFilled(p.P(0.34f, -0.36f), p.P(0.44f, -0.26f), p.P(0.34f, -0.16f), p.P(0.24f, -0.26f), p.Color);
+            p.Bezier(-0.34f, 0.26f, -0.10f, 0.26f, 0.10f, -0.26f, 0.34f, -0.26f);
+            p.Quad(-0.34f, 0.16f, -0.24f, 0.26f, -0.34f, 0.36f, -0.44f, 0.26f);
+            p.Quad(0.34f, -0.36f, 0.44f, -0.26f, 0.34f, -0.16f, 0.24f, -0.26f);
             break;
 
         case Icon::Grid:
@@ -328,8 +380,57 @@ void DrawIcon(const Pen& p, Icon icon) {
 
 } // namespace
 
+namespace {
+
+// Как посадить чернила иконки в её рамку: сдвиг к центру и поправка размера.
+struct InkFit {
+    ImVec2 Offset{0.0f, 0.0f};
+    float Scale = 1.0f;
+};
+
+// Доля рамки, которую должны занимать чернила. Одинаковая для всех иконок —
+// именно постоянство оптического размера и читается как «ряд ровный». Иконки
+// нарисованы от руки в разное время, и без нормировки стрелки отмены выходили
+// заметно мельче листа документа рядом.
+constexpr float kTargetExtent = 0.80f;
+
+// Считается один раз на иконку: геометрия статична, а гонять замер каждый кадр
+// на каждую кнопку — лишняя работа на ровном месте.
+InkFit FitOf(Icon icon) {
+    static std::unordered_map<int, InkFit> cache;
+    const int key = (int)icon;
+    auto it = cache.find(key);
+    if (it != cache.end()) return it->second;
+
+    Pen probe;             // Dl == nullptr — режим замера
+    DrawIcon(probe, icon);
+
+    InkFit fit;
+    if (probe.MaxX >= probe.MinX) {
+        fit.Offset = ImVec2(-(probe.MinX + probe.MaxX) * 0.5f, -(probe.MinY + probe.MaxY) * 0.5f);
+        const float extent = ImMax(probe.MaxX - probe.MinX, probe.MaxY - probe.MinY);
+        // Масштаб общий по обеим осям: раздельный исказил бы пропорции, и
+        // круглая иконка стала бы овальной.
+        if (extent > 0.01f) fit.Scale = ImClamp(kTargetExtent / extent, 0.75f, 1.6f);
+    }
+    cache[key] = fit;
+    return fit;
+}
+
+} // namespace
+
 void Draw(ImDrawList* dl, Icon icon, ImVec2 center, float size, ImU32 color) {
-    Pen pen{dl, center, size, color, ImMax(1.0f, size * 0.075f)};
+    const InkFit fit = FitOf(icon);
+    Pen pen;
+    pen.Dl = dl;
+    pen.C = center;
+    // Масштаб иконки входит в S, а сдвиг задан в её собственных координатах —
+    // поэтому сдвигаем ДО масштабирования, и порядок здесь важен.
+    pen.S = size * fit.Scale;
+    pen.Color = color;
+    pen.Thick = ImMax(1.0f, size * 0.075f); // толщина линии от размера КНОПКИ, а не от масштаба
+    pen.OffX = fit.Offset.x;
+    pen.OffY = fit.Offset.y;
     DrawIcon(pen, icon);
 }
 

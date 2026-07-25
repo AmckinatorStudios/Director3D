@@ -5,6 +5,7 @@
 #include "imgui.h"
 
 #include <algorithm>
+#include <string>
 
 #include "anim/BonePose.h"
 #include "anim/DirectorComponents.h"
@@ -34,6 +35,18 @@ bool SectionHeader(const char* label, bool defaultOpen = true) {
     const bool open = ImGui::CollapsingHeader(label, flags);
     ImGui::PopStyleVar();
     return open;
+}
+
+// Укорачивает путь слева: имя файла важнее каталога, а панель узкая.
+std::string ShortPath(const std::string& path) {
+    const float maxWidth = ImGui::GetContentRegionAvail().x - 60.0f;
+    if (maxWidth <= 0.0f || ImGui::CalcTextSize(path.c_str()).x <= maxWidth) return path;
+    size_t cut = 0;
+    while (cut < path.size() &&
+           ImGui::CalcTextSize(("…" + path.substr(cut)).c_str()).x > maxWidth) {
+        ++cut;
+    }
+    return "…" + path.substr(cut);
 }
 
 void RowLabel(const char* label) {
@@ -272,7 +285,9 @@ void PropertiesPanel::DrawBoneSection(DirectorHost& host) {
     glm::vec3 t, s;
     glm::quat r;
     if (!ReadBoneLocal(scene, bone.EntityId, bone.Joint, t, r, s)) {
-        ImGui::TextDisabled("Поза ещё не посчитана — модель загружается.");
+        ImGui::PushStyleColor(ImGuiCol_Text, Theme::Colors::TextDim);
+        ImGui::TextWrapped("Поза ещё не посчитана — модель загружается.");
+        ImGui::PopStyleColor();
         return;
     }
     glm::vec3 euler = EulerDegreesFromQuat(r);
@@ -317,7 +332,11 @@ void PropertiesPanel::DrawBoneSection(DirectorHost& host) {
     }
 
     ImGui::Spacing();
-    ImGui::TextDisabled("Значения локальные — относительно родительской кости.");
+    // TextWrapped, а не TextDisabled: панель узкая, и однострочная подсказка
+    // обрывалась на полуслове («…относительно родител»).
+    ImGui::PushStyleColor(ImGuiCol_Text, Theme::Colors::TextDim);
+    ImGui::TextWrapped("Значения локальные — относительно родительской кости.");
+    ImGui::PopStyleColor();
     ImGui::Spacing();
 }
 
@@ -460,8 +479,12 @@ void PropertiesPanel::Draw(DirectorHost& host) {
             if (edited) host.NotifyObjectEdited(id);
             if (!simple) {
                 ImGui::Spacing();
-                ImGui::TextDisabled("Motion Blur — камерный: смазывает движение и поворот");
-                ImGui::TextDisabled("камеры. Смаз от движения самих объектов не считается.");
+                // Раньше подсказка была разбита на две строки вручную и всё
+                // равно не помещалась: перенос по ширине панели надёжнее.
+                ImGui::PushStyleColor(ImGuiCol_Text, Theme::Colors::TextDim);
+                ImGui::TextWrapped("Motion Blur — камерный: смазывает движение и поворот камеры. "
+                                   "Смаз от движения самих объектов не считается.");
+                ImGui::PopStyleColor();
             }
         }
     }
@@ -516,7 +539,8 @@ void PropertiesPanel::Draw(DirectorHost& host) {
             host.TrackLastItem();
             DrawKeyDiamond(host, Property::Color, true);
             if (!mr->MaterialPath.empty()) {
-                ImGui::TextDisabled("Материал: %s", mr->MaterialPath.c_str());
+                ImGui::TextDisabled("Материал: %s", ShortPath(mr->MaterialPath).c_str());
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", mr->MaterialPath.c_str());
                 ImGui::TextDisabled("(материал перекрывает цвет)");
             }
             if (edited) host.NotifyObjectEdited(id);
@@ -526,10 +550,14 @@ void PropertiesPanel::Draw(DirectorHost& host) {
     // --- Персонаж (скелетная модель) ---
     if (AnimatedModelComponent* am = reg.try_get<AnimatedModelComponent>(e)) {
         if (SectionHeader("Character")) {
-            ImGui::TextDisabled("Модель: %s", am->Path.empty() ? "<встроенная демо>" : am->Path.c_str());
+            ImGui::TextDisabled("Модель: %s", am->Path.empty() ? "<встроенная демо>"
+                                                               : ShortPath(am->Path).c_str());
+            if (!am->Path.empty() && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", am->Path.c_str());
             const int clipCount = am->Model ? (int)am->Model->Clips().size() : 0;
             if (clipCount == 0) {
-                ImGui::TextDisabled("Клипов в модели нет — анимировать можно только трансформом.");
+                ImGui::PushStyleColor(ImGuiCol_Text, Theme::Colors::TextDim);
+            ImGui::TextWrapped("Клипов в модели нет — анимировать можно только трансформом.");
+            ImGui::PopStyleColor();
             } else {
                 ImGui::Text("Клипов: %d", clipCount);
                 RowLabel("Clip");

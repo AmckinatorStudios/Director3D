@@ -571,12 +571,6 @@ void DirectorLayer::DrawUI() {
     m_properties.Draw(*this);
     m_world.Draw(*this);
 
-    // Транспорт живёт в собственном окне под вьюпортом — так он остаётся на
-    // виду, даже если таймлайн свернули или вытащили в отдельное окно.
-    ImGui::Begin("Transport");
-    m_timeline.DrawTransport(*this);
-    ImGui::End();
-
     m_timeline.Draw(*this);
     m_dialogs.Draw(*this);
 
@@ -607,7 +601,9 @@ void DirectorLayer::BuildDockLayout(unsigned int dockspaceId) {
     ImGui::DockBuilderSetNodeSize(dockspaceId, ImGui::GetMainViewport()->WorkSize);
 
     // Раскладка повторяет референс: слева дерево сцены и ассеты, справа
-    // свойства, в центре вьюпорт, под ним транспорт и таймлайн.
+    // свойства, в центре вьюпорт, под ним таймлайн (транспорт — его первая
+    // строка, а не отдельное окно: ради одного ряда кнопок он забирал целую
+    // вкладку с заголовком и полоской прокрутки).
     // ВАЖНО: у каждого сплита забираем ОБА узла. Если не забрать «остаток»
     // (последний параметр), переменная продолжает указывать на узел, который
     // после сплита стал РОДИТЕЛЬСКИМ, и окно, пристыкованное к нему, накрывает
@@ -620,18 +616,13 @@ void DirectorLayer::BuildDockLayout(unsigned int dockspaceId) {
     ImGuiID leftTop = left;
     const ImGuiID leftBottom = ImGui::DockBuilderSplitNode(left, ImGuiDir_Down, 0.48f, nullptr, &leftTop);
 
-    // Транспорт — узкая полоса между вьюпортом и таймлайном.
-    ImGuiID timelineNode = bottom;
-    const ImGuiID transport = ImGui::DockBuilderSplitNode(bottom, ImGuiDir_Up, 0.18f, nullptr, &timelineNode);
-
     ImGui::DockBuilderDockWindow("Scene", leftTop);
     ImGui::DockBuilderDockWindow("Assets", leftBottom);
     ImGui::DockBuilderDockWindow("Viewport", center);
     ImGui::DockBuilderDockWindow("Render View", center);
     ImGui::DockBuilderDockWindow("Properties", right);
     ImGui::DockBuilderDockWindow("World", right);
-    ImGui::DockBuilderDockWindow("Transport", transport);
-    ImGui::DockBuilderDockWindow("Timeline", timelineNode);
+    ImGui::DockBuilderDockWindow("Timeline", bottom);
     ImGui::DockBuilderFinish(dockspaceId);
 }
 
