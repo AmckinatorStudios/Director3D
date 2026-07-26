@@ -178,11 +178,14 @@ int ShadingCode(ShadingMode mode) {
 //  Жизненный цикл
 // ============================================================================
 
-void StageRenderer::Init() {
+void StageRenderer::Init(int sceneMsaa) {
+    m_sceneMsaa = std::max(sceneMsaa, 1);
     m_shadows.emplace(2048);
-    m_stageFbo.emplace(m_stageW, m_stageH);
+    // MSAA — только у буферов СЦЕНЫ. Буферы пост-обработки принимают уже
+    // готовую картинку, геометрии в них нет, и сглаживать там нечего.
+    m_stageFbo.emplace(m_stageW, m_stageH, m_sceneMsaa);
     m_stagePostFbo.emplace(m_stageW, m_stageH);
-    m_viewFbo.emplace(m_viewW, m_viewH);
+    m_viewFbo.emplace(m_viewW, m_viewH, m_sceneMsaa);
     m_viewPostFbo.emplace(m_viewW, m_viewH);
     m_outlineMask.emplace(m_stageW, m_stageH);
     m_stagePostfx.emplace();
@@ -465,6 +468,11 @@ Framebuffer& StageRenderer::RenderFrame(Scene& scene, const LightingEnvironment&
         m_debug->Flush(d.View, d.Proj);
     }
 
+    // Многосэмпловое содержимое переносится в обычные текстуры. Строго ЗДЕСЬ:
+    // вся геометрия и служебная графика уже нарисованы, а всё, что дальше,
+    // читает буфер как текстуру — а многосэмпловую обычный sampler2D не берёт.
+    d.Hdr->Resolve();
+
     // --- Проход 5: скорости ---
     // Отдельный проход геометрии, пишущий экранное смещение каждого пикселя за
     // кадр. Нужен только смазу движения, поэтому и рисуется только когда смаз
@@ -553,7 +561,7 @@ bool StageRenderer::RenderToTarget(Scene& scene, const LightingEnvironment& env,
     // кадр уходил в файл без тон-маппинга, bloom и виньетки — то есть заметно
     // темнее и площе того, что показывал Render View.
     if (!m_exportFbo || m_exportFbo->Width() != w || m_exportFbo->Height() != h) {
-        m_exportFbo.emplace(w, h);
+        m_exportFbo.emplace(w, h, m_sceneMsaa);
     }
     // Отдельный экземпляр PostFX: у него своя история кадра для motion blur, и
     // экспорт не должен смешиваться с историей интерактивного превью.

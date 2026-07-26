@@ -95,7 +95,11 @@ void DirectorLayer::OnAttach() {
     ImGui_ImplOpenGL3_Init("#version 330");
     m_imguiReady = true;
 
-    m_renderer.Init();
+    // Сглаживание буфера сцены. Переменной окружения нет ради удобства: она
+    // нужна проверкам, которые обязаны сравнивать кадры с ним и без него.
+    int sceneMsaa = 4;
+    if (const char* msaa = std::getenv("D3D_SCENE_MSAA")) sceneMsaa = std::atoi(msaa);
+    m_renderer.Init(sceneMsaa);
     m_assetsDir = fs::current_path();
 
     BuildDefaultScene();

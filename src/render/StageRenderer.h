@@ -58,7 +58,11 @@ struct ViewportOverlays {
 // ---------------------------------------------------------------------------
 class StageRenderer {
 public:
-    void Init();
+    // sceneMsaa — сглаживание кромок буфера СЦЕНЫ средствами растеризатора
+    // (1 — выключено). Применяется к рабочему вьюпорту, Render View и экспорту:
+    // если бы оно стояло только на превью, файл отличался бы от того, что видел
+    // оператор, — а это ровно то, чего инструмент обязан не допускать.
+    void Init(int sceneMsaa = 4);
 
     void SetStageSize(int w, int h);
     void SetRenderViewSize(int w, int h);
@@ -214,6 +218,7 @@ private:
     sage::ecs::RenderBatch m_batch;
     sage::ecs::RenderStats m_stats;
 
+    int m_sceneMsaa = 4;
     bool m_stagePostApplied = false;
     bool m_viewPostApplied = false;
     int m_stageW = 1280, m_stageH = 720;
