@@ -33,8 +33,13 @@ void Draw(ImDrawList* dl, Icon icon, ImVec2 center, float size, ImU32 color);
 // Крупная кнопка тулбара: иконка сверху, подпись снизу (как в референсе).
 // active — «нажатое» состояние (текущий инструмент, включённый режим).
 // Возвращает true при клике. enabled=false рисует приглушённо и не кликается.
+//
+// width = 0 означает «по подписи»: ширина считается из текста, но не уже 56 px.
+// Фиксированная ширина работала, пока подписи были английскими; «Перемещение»
+// вместо «Move» вылезало на соседнюю кнопку. Считать ширину по тексту —
+// единственный способ пережить смену языка, не подгоняя числа вручную.
 bool ToolbarButton(Icon icon, const char* label, const char* tooltip,
-                   bool active = false, bool enabled = true, float width = 56.0f);
+                   bool active = false, bool enabled = true, float width = 0.0f);
 
 // Компактная квадратная кнопка (транспорт таймлайна, кнопки в строке дорожки).
 bool IconButton(const char* id, Icon icon, const char* tooltip,

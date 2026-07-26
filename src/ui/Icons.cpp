@@ -1,5 +1,7 @@
 #include "ui/Icons.h"
 
+#include <algorithm>
+
 #include <cmath>
 #include <unordered_map>
 
@@ -441,6 +443,14 @@ void Draw(ImDrawList* dl, Icon icon, ImVec2 center, float size, ImU32 color) {
 bool ToolbarButton(Icon icon, const char* label, const char* tooltip,
                    bool active, bool enabled, float width) {
     ImGui::PushID(label);
+
+    // Подпись рисуется мелким шрифтом, поэтому и мерить её надо им же: с
+    // основным шрифтом ширина вышла бы завышенной, и кнопки разъехались.
+    if (ImFont* small = Theme::SmallFont()) ImGui::PushFont(small);
+    const ImVec2 textSize = ImGui::CalcTextSize(label);
+    if (Theme::SmallFont()) ImGui::PopFont();
+    if (width <= 0.0f) width = std::max(56.0f, textSize.x + 10.0f);
+
     const ImVec2 size(width, Theme::kToolbarHeight - 8.0f);
     const ImVec2 pos = ImGui::GetCursorScreenPos();
 
@@ -462,7 +472,6 @@ bool ToolbarButton(Icon icon, const char* label, const char* tooltip,
     Draw(dl, icon, ImVec2(pos.x + size.x * 0.5f, pos.y + 15.0f), 22.0f, fg);
 
     if (ImFont* small = Theme::SmallFont()) ImGui::PushFont(small);
-    const ImVec2 textSize = ImGui::CalcTextSize(label);
     dl->AddText(ImVec2(pos.x + (size.x - textSize.x) * 0.5f, pos.y + size.y - textSize.y - 3.0f),
                 fg, label);
     if (Theme::SmallFont()) ImGui::PopFont();

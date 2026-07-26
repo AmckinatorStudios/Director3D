@@ -18,6 +18,7 @@
 #include "sage/scene/Components.h"
 #include "ui/DirectorHost.h"
 #include "ui/Icons.h"
+#include "ui/Localization.h"
 #include "ui/Theme.h"
 
 namespace d3d {
@@ -51,23 +52,23 @@ void DecomposeToTransform(const glm::mat4& m, Transform& out) {
 
 const char* PresetName(ViewPreset p) {
     switch (p) {
-        case ViewPreset::Perspective: return "Perspective";
-        case ViewPreset::Front:       return "Front";
-        case ViewPreset::Side:        return "Side";
-        case ViewPreset::Top:         return "Top";
-        case ViewPreset::SceneCamera: return "Camera";
+        case ViewPreset::Perspective: return T("Перспектива");
+        case ViewPreset::Front:       return T("Спереди");
+        case ViewPreset::Side:        return T("Сбоку");
+        case ViewPreset::Top:         return T("Сверху");
+        case ViewPreset::SceneCamera: return T("Камера");
     }
-    return "Perspective";
+    return T("Перспектива");
 }
 
 const char* ShadingName(ShadingMode m) {
     switch (m) {
-        case ShadingMode::Shaded:    return "Shaded";
-        case ShadingMode::Wireframe: return "Wireframe";
-        case ShadingMode::Unlit:     return "Unlit";
-        case ShadingMode::Normals:   return "Normals";
+        case ShadingMode::Shaded:    return T("С затенением");
+        case ShadingMode::Wireframe: return T("Каркас");
+        case ShadingMode::Unlit:     return T("Без света");
+        case ShadingMode::Normals:   return T("Нормали");
     }
-    return "Shaded";
+    return T("С затенением");
 }
 
 } // namespace
@@ -79,10 +80,15 @@ const char* ShadingName(ShadingMode m) {
 void StagePanel::DrawViewToolbar(DirectorHost& host) {
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(6, 4));
 
-    ImGui::SetNextItemWidth(130.0f);
+    // Ширина списков считается по САМОМУ ДЛИННОМУ варианту, а не задаётся
+    // числом: «С затенением» длиннее «Shaded» вдвое, и любая подобранная
+    // константа обрезала бы текст в одном из языков.
+    const ViewPreset presets[] = {ViewPreset::Perspective, ViewPreset::Front, ViewPreset::Side,
+                                  ViewPreset::Top, ViewPreset::SceneCamera};
+    float viewWidth = 0.0f;
+    for (ViewPreset p : presets) viewWidth = std::max(viewWidth, ImGui::CalcTextSize(PresetName(p)).x);
+    ImGui::SetNextItemWidth(viewWidth + ImGui::GetFrameHeight() + 16.0f);
     if (ImGui::BeginCombo("##view", PresetName(host.Preset()))) {
-        const ViewPreset presets[] = {ViewPreset::Perspective, ViewPreset::Front, ViewPreset::Side,
-                                      ViewPreset::Top, ViewPreset::SceneCamera};
         for (ViewPreset p : presets) {
             if (ImGui::Selectable(PresetName(p), host.Preset() == p)) host.Preset() = p;
         }
@@ -90,10 +96,12 @@ void StagePanel::DrawViewToolbar(DirectorHost& host) {
     }
 
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(120.0f);
+    const ShadingMode modes[] = {ShadingMode::Shaded, ShadingMode::Wireframe,
+                                 ShadingMode::Unlit, ShadingMode::Normals};
+    float shadeWidth = 0.0f;
+    for (ShadingMode m : modes) shadeWidth = std::max(shadeWidth, ImGui::CalcTextSize(ShadingName(m)).x);
+    ImGui::SetNextItemWidth(shadeWidth + ImGui::GetFrameHeight() + 16.0f);
     if (ImGui::BeginCombo("##shading", ShadingName(host.Shading()))) {
-        const ShadingMode modes[] = {ShadingMode::Shaded, ShadingMode::Wireframe,
-                                     ShadingMode::Unlit, ShadingMode::Normals};
         for (ShadingMode m : modes) {
             if (ImGui::Selectable(ShadingName(m), host.Shading() == m)) host.Shading() = m;
         }
@@ -102,28 +110,28 @@ void StagePanel::DrawViewToolbar(DirectorHost& host) {
 
     ViewportOverlays& ov = host.Overlays();
     ImGui::SameLine(0.0f, 14.0f);
-    if (Icons::IconButton("grid", Icon::Grid, "Сетка (G)", ov.Grid)) ov.Grid = !ov.Grid;
+    if (Icons::IconButton("grid", Icon::Grid, T("Сетка (G)"), ov.Grid)) ov.Grid = !ov.Grid;
     ImGui::SameLine();
-    if (Icons::IconButton("gizmos", Icon::Cube, "Каркасы камер, света и эффектов", ov.Gizmos))
+    if (Icons::IconButton("gizmos", Icon::Cube, T("Каркасы камер, света и эффектов"), ov.Gizmos))
         ov.Gizmos = !ov.Gizmos;
     ImGui::SameLine();
-    if (Icons::IconButton("frame", Icon::Camera, "Рамка кадра активной камеры", ov.CameraFrame))
+    if (Icons::IconButton("frame", Icon::Camera, T("Рамка кадра активной камеры"), ov.CameraFrame))
         ov.CameraFrame = !ov.CameraFrame;
     ImGui::SameLine();
-    if (Icons::IconButton("safe", Icon::Render, "Безопасная зона", ov.SafeArea)) ov.SafeArea = !ov.SafeArea;
+    if (Icons::IconButton("safe", Icon::Render, T("Безопасная зона"), ov.SafeArea)) ov.SafeArea = !ov.SafeArea;
     ImGui::SameLine();
-    if (Icons::IconButton("thirds", Icon::Curve, "Сетка третей (композиция кадра)", ov.Thirds))
+    if (Icons::IconButton("thirds", Icon::Curve, T("Сетка третей (композиция кадра)"), ov.Thirds))
         ov.Thirds = !ov.Thirds;
 
     // --- Пространство и привязка гизмо ---
     ImGui::SameLine(0.0f, 14.0f);
     GizmoSpace& space = host.GizmoSpaceRef();
-    if (ImGui::SmallButton(space == GizmoSpace::World ? "World" : "Local")) {
+    if (ImGui::SmallButton(space == GizmoSpace::World ? T("Мир") : T("Локально"))) {
         space = space == GizmoSpace::World ? GizmoSpace::Local : GizmoSpace::World;
     }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Пространство манипулятора: оси мира или оси объекта");
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", T("Пространство манипулятора: оси мира или оси объекта"));
     ImGui::SameLine();
-    ImGui::Checkbox("Snap", &host.GizmoSnap());
+    ImGui::Checkbox(T("Привязка"), &host.GizmoSnap());
 
     ImGui::PopStyleVar();
 }
@@ -516,7 +524,7 @@ void StagePanel::DrawViewport(DirectorHost& host) {
     }
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-    ImGui::Begin("Viewport");
+    ImGui::Begin((std::string(T("Вьюпорт")) + "###Viewport").c_str());
     ImGui::PopStyleVar();
 
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6, 3));
@@ -560,7 +568,7 @@ void StagePanel::DrawViewport(DirectorHost& host) {
     ImGui::GetWindowDrawList()->AddText(
         ImVec2(imagePos.x + 10.0f, imagePos.y + avail.y - 20.0f),
         IM_COL32(255, 255, 255, 90),
-        "ПКМ — осмотр и полёт (WASD/QE)   СКМ — панорама   Колесо — приблизить   F — навести");
+        T("ПКМ — осмотр и полёт (WASD/QE)   СКМ — панорама   Колесо — приблизить   F — навести"));
     if (Theme::SmallFont()) ImGui::PopFont();
 
     // --- Индикатор авто-ключа: пишущий режим должен быть виден всегда ---
@@ -568,7 +576,7 @@ void StagePanel::DrawViewport(DirectorHost& host) {
         ImDrawList* dl = ImGui::GetWindowDrawList();
         const ImVec2 c(imagePos.x + avail.x - 24.0f, imagePos.y + 22.0f);
         dl->AddCircleFilled(c, 7.0f, Theme::Colors::Record, 16);
-        dl->AddText(ImVec2(c.x - 74.0f, c.y - 7.0f), Theme::Colors::Record, "AUTO KEY");
+        dl->AddText(ImVec2(c.x - 74.0f, c.y - 7.0f), Theme::Colors::Record, T("АВТО-КЛЮЧ"));
     }
 
     ImGui::End();
@@ -580,7 +588,7 @@ void StagePanel::DrawViewport(DirectorHost& host) {
 
 void StagePanel::DrawRenderView(DirectorHost& host) {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-    ImGui::Begin("Render View");
+    ImGui::Begin((std::string(T("Просмотр рендера")) + "###Render View").c_str());
     ImGui::PopStyleVar();
 
     const ImVec2 avail = ImGui::GetContentRegionAvail();
@@ -590,11 +598,11 @@ void StagePanel::DrawRenderView(DirectorHost& host) {
     if (!scene.Get(host.ActiveCameraId()).Valid()) {
         ImGui::Spacing();
         ImGui::Indent(12.0f);
-        ImGui::TextDisabled("Активной камеры нет.");
+        ImGui::TextDisabled("%s", T("Активной камеры нет."));
         ImGui::Spacing();
-        ImGui::TextWrapped("Чистовой кадр снимается с камеры сцены. Создайте камеру "
-                           "(Create > Camera) — она станет активной автоматически.");
-        if (ImGui::Button("Создать камеру")) host.SetActiveCameraId(host.Create(CreateKind::Camera));
+        ImGui::TextWrapped("%s", T("Чистовой кадр снимается с камеры сцены. Создайте камеру "
+                           "(Create > Camera) — она станет активной автоматически."));
+        if (ImGui::Button(T("Создать камеру"))) host.SetActiveCameraId(host.Create(CreateKind::Camera));
         ImGui::Unindent(12.0f);
         ImGui::End();
         return;
@@ -628,7 +636,7 @@ void StagePanel::DrawRenderView(DirectorHost& host) {
         dl->AddRectFilled(barA, ImVec2(barA.x + (barB.x - barA.x) * exporter.Progress(), barB.y),
                           Theme::Colors::Accent, 3.0f);
         char label[96];
-        std::snprintf(label, sizeof(label), "Рендер: кадр %d из %d",
+        std::snprintf(label, sizeof(label), T("Рендер: кадр %d из %d"),
                       exporter.CurrentFrame(), exporter.TotalFrames());
         dl->AddText(ImVec2(barA.x + 8.0f, barA.y + 1.0f), IM_COL32(255, 255, 255, 230), label);
     }

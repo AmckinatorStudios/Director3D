@@ -1,5 +1,7 @@
 #include "DirectorLayer.h"
 
+#include "ui/Localization.h"
+
 #include <algorithm>
 #include <fstream>
 #include <functional>
@@ -100,6 +102,14 @@ void DirectorLayer::OnAttach() {
     int sceneMsaa = 4;
     if (const char* msaa = std::getenv("D3D_SCENE_MSAA")) sceneMsaa = std::atoi(msaa);
     m_renderer.Init(sceneMsaa);
+
+    // Словарь лежит рядом с бинарником, в assets/i18n. Отсутствие файла — не
+    // авария: интерфейс просто останется русским.
+    i18n::LoadDictionary((fs::current_path() / "assets" / "i18n").string());
+    i18n::LoadPreference();
+    // Переменная окружения бьёт сохранённый выбор: так снимаются скриншоты и
+    // гоняется CI, не трогая настройку живого пользователя.
+    if (const char* lang = std::getenv("D3D_LANG")) i18n::SetLanguageByCode(lang);
     m_assetsDir = fs::current_path();
 
     BuildDefaultScene();

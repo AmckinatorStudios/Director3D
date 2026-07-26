@@ -7,6 +7,7 @@
 
 #include "ui/DirectorHost.h"
 #include "ui/Icons.h"
+#include "ui/Localization.h"
 #include "ui/Theme.h"
 
 namespace d3d {
@@ -20,90 +21,95 @@ void ToolbarPanel::Draw(DirectorHost& host) {
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(3, 0));
 
     // --- Файл ---
-    if (Icons::ToolbarButton(Icon::New, "New", "Новый проект (Ctrl+N)")) host.OpenDialog(Dialog::NewProject);
+    if (Icons::ToolbarButton(Icon::New, T("Новый"), T("Новый проект (Ctrl+N)"))) host.OpenDialog(Dialog::NewProject);
     ImGui::SameLine();
-    if (Icons::ToolbarButton(Icon::Open, "Open", "Открыть проект (Ctrl+O)")) host.OpenDialog(Dialog::OpenProject);
+    if (Icons::ToolbarButton(Icon::Open, T("Открыть"), T("Открыть проект (Ctrl+O)"))) host.OpenDialog(Dialog::OpenProject);
     ImGui::SameLine();
-    if (Icons::ToolbarButton(Icon::Save, "Save", "Сохранить проект (Ctrl+S)")) {
+    if (Icons::ToolbarButton(Icon::Save, T("Сохранить"), T("Сохранить проект (Ctrl+S)"))) {
         if (host.ProjectPath().empty()) {
             host.OpenDialog(Dialog::SaveProjectAs);
         } else {
             std::string err;
-            if (!host.SaveProject(host.ProjectPath(), err)) host.SetStatus("Не сохранилось: " + err);
+            if (!host.SaveProject(host.ProjectPath(), err)) host.SetStatus(T("Не сохранилось: ") + err);
         }
     }
     Icons::ToolbarSeparator();
 
     // --- Обмен ---
-    if (Icons::ToolbarButton(Icon::Import, "Import", "Импортировать модель или звук (Ctrl+I)"))
+    if (Icons::ToolbarButton(Icon::Import, T("Импорт"), T("Импортировать модель или звук (Ctrl+I)")))
         host.OpenDialog(Dialog::ImportAsset);
     ImGui::SameLine();
-    if (Icons::ToolbarButton(Icon::Export, "Export", "Экспортировать сцену в формат движка (.sage)"))
+    if (Icons::ToolbarButton(Icon::Export, T("Экспорт"), T("Экспортировать сцену в формат движка (.sage)")))
         host.OpenDialog(Dialog::ExportScene);
     Icons::ToolbarSeparator();
 
     // --- Отмена ---
-    if (Icons::ToolbarButton(Icon::Undo, "Undo", "Отменить (Ctrl+Z)", false, host.CanUndo())) host.Undo();
+    if (Icons::ToolbarButton(Icon::Undo, T("Отменить"), T("Отменить (Ctrl+Z)"), false, host.CanUndo())) host.Undo();
     ImGui::SameLine();
-    if (Icons::ToolbarButton(Icon::Redo, "Redo", "Повторить (Ctrl+Y)", false, host.CanRedo())) host.Redo();
+    if (Icons::ToolbarButton(Icon::Redo, T("Повторить"), T("Повторить (Ctrl+Y)"), false, host.CanRedo())) host.Redo();
     Icons::ToolbarSeparator();
 
     // --- Инструменты манипуляции ---
     // Значения — операции ImGuizmo; 0 означает «только выбор, без манипулятора».
     int& op = host.GizmoOp();
-    if (Icons::ToolbarButton(Icon::Select, "Select", "Выбор (Q)", op == 0)) op = 0;
+    if (Icons::ToolbarButton(Icon::Select, T("Выбор"), T("Выбор (Q)"), op == 0)) op = 0;
     ImGui::SameLine();
-    if (Icons::ToolbarButton(Icon::Move, "Move", "Перемещение (W)", op == (int)ImGuizmo::TRANSLATE))
+    if (Icons::ToolbarButton(Icon::Move, T("Перемещение"), T("Перемещение (W)"), op == (int)ImGuizmo::TRANSLATE))
         op = (int)ImGuizmo::TRANSLATE;
     ImGui::SameLine();
-    if (Icons::ToolbarButton(Icon::Rotate, "Rotate", "Поворот (E)", op == (int)ImGuizmo::ROTATE))
+    if (Icons::ToolbarButton(Icon::Rotate, T("Повернуть"), T("Поворот (E)"), op == (int)ImGuizmo::ROTATE))
         op = (int)ImGuizmo::ROTATE;
     ImGui::SameLine();
-    if (Icons::ToolbarButton(Icon::Scale, "Scale", "Масштаб (R)", op == (int)ImGuizmo::SCALE))
+    if (Icons::ToolbarButton(Icon::Scale, T("Масштаб"), T("Масштаб (R)"), op == (int)ImGuizmo::SCALE))
         op = (int)ImGuizmo::SCALE;
     Icons::ToolbarSeparator();
 
     // --- Быстрое создание ---
-    if (Icons::ToolbarButton(Icon::Camera, "Camera", "Добавить камеру")) host.Create(CreateKind::Camera);
+    if (Icons::ToolbarButton(Icon::Camera, T("Камера"), T("Добавить камеру"))) host.Create(CreateKind::Camera);
     ImGui::SameLine();
-    if (Icons::ToolbarButton(Icon::Light, "Light", "Добавить источник света")) host.Create(CreateKind::PointLight);
+    if (Icons::ToolbarButton(Icon::Light, T("Свет"), T("Добавить источник света"))) host.Create(CreateKind::PointLight);
     ImGui::SameLine();
-    if (Icons::ToolbarButton(Icon::Cube, "Object", "Добавить объект (куб)")) host.Create(CreateKind::Cube);
+    if (Icons::ToolbarButton(Icon::Cube, T("Объект"), T("Добавить объект (куб)"))) host.Create(CreateKind::Cube);
     Icons::ToolbarSeparator();
 
     // --- Транспорт и рендер ---
     Playback& transport = host.Transport();
     if (Icons::ToolbarButton(transport.Playing() ? Icon::Pause : Icon::Play,
-                             transport.Playing() ? "Pause" : "Play",
-                             "Проигрывание (Пробел)", transport.Playing())) {
+                             transport.Playing() ? T("Пауза") : T("Проиграть"),
+                             T("Проигрывание (Пробел)"), transport.Playing())) {
         transport.TogglePlay();
     }
     ImGui::SameLine();
-    if (Icons::ToolbarButton(Icon::Stop, "Stop", "Стоп и в начало (Shift+Пробел)", false, transport.Playing() || host.CurrentTime() > 0.0f)) {
+    if (Icons::ToolbarButton(Icon::Stop, T("Стоп"), T("Стоп и в начало (Shift+Пробел)"), false, transport.Playing() || host.CurrentTime() > 0.0f)) {
         transport.Stop();
         host.SetCurrentTime(0.0f);
     }
     ImGui::SameLine();
-    if (Icons::ToolbarButton(Icon::Record, "Auto Key",
-                             "Авто-ключ: любая правка объекта сама ставит ключ (Ctrl+K)",
+    if (Icons::ToolbarButton(Icon::Record, T("Авто-ключ"),
+                             T("Авто-ключ: любая правка объекта сама ставит ключ (Ctrl+K)"),
                              host.AutoKey())) {
         host.AutoKey() = !host.AutoKey();
-        host.SetStatus(host.AutoKey() ? "Авто-ключ включён" : "Авто-ключ выключен");
+        host.SetStatus(host.AutoKey() ? T("Авто-ключ включён") : T("Авто-ключ выключен"));
     }
     ImGui::SameLine();
-    if (Icons::ToolbarButton(Icon::Key, "Key", "Поставить ключ выбранному (K)", false, hasSelection)) {
+    if (Icons::ToolbarButton(Icon::Key, T("Ключ"), T("Поставить ключ выбранному (K)"), false, hasSelection)) {
         const int keyed = host.KeySelected();
-        host.SetStatus(keyed > 0 ? "Ключи поставлены" : "Нечего ключить: сначала добавьте дорожку");
+        host.SetStatus(keyed > 0 ? T("Ключи поставлены") : T("Нечего ключить: сначала добавьте дорожку"));
     }
     ImGui::SameLine();
-    if (Icons::ToolbarButton(Icon::Render, "Render", "Отрендерить секвенцию кадров (F12)", exporting, !exporting))
+    if (Icons::ToolbarButton(Icon::Render, T("Рендер"), T("Отрендерить секвенцию кадров (F12)"), exporting, !exporting))
         host.StartRender();
 
     // --- Переключатель режима (прижат вправо, как в референсе) ---
     // Отступ задаём АБСОЛЮТНОЙ координатой от начала строки, а не «пробелом»
     // после последней кнопки: SameLine(0, spacing) отсчитывает от конца
     // предыдущего элемента, и переключатель уезжал бы за край окна.
-    const float switchWidth = 210.0f;
+    // Ширина группы — по фактическим надписям: по-русски «Простой режим» и
+    // «Продвинутый» шире английских, и фиксированные 210 px обрезали правое
+    // слово. 38 — сам тумблер, отступы — из стиля.
+    const float switchWidth = ImGui::CalcTextSize(T("Простой")).x +
+                              ImGui::CalcTextSize(T("Продвинутый")).x + 38.0f +
+                              ImGui::GetStyle().ItemSpacing.x * 2.0f + 12.0f;
     const float rowWidth = ImGui::GetWindowContentRegionMax().x - ImGui::GetWindowContentRegionMin().x;
     const float lastX = ImGui::GetItemRectMax().x - ImGui::GetWindowPos().x;
     if (rowWidth - switchWidth > lastX + 12.0f) {
@@ -114,7 +120,7 @@ void ToolbarPanel::Draw(DirectorHost& host) {
         bool& simple = host.SimpleMode();
         ImGui::TextColored(simple ? ImGui::GetStyleColorVec4(ImGuiCol_Text)
                                   : ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled),
-                           "Simple Mode");
+                           "%s", T("Простой"));
         ImGui::SameLine();
 
         // Тумблер: слева «просто», справа «всё». Рисуем руками — штатный
@@ -133,14 +139,14 @@ void ToolbarPanel::Draw(DirectorHost& host) {
         dl->AddCircleFilled(ImVec2(knobX, pos.y + size.y * 0.5f), size.y * 0.5f - 2.0f,
                             IM_COL32(240, 240, 240, 255), 16);
         if (hovered) {
-            ImGui::SetTooltip("Простой режим прячет редактор кривых, ключевые дорожки\n"
-                              "и тонкие параметры. Продвинутый показывает всё.");
+            ImGui::SetTooltip("%s", T("Простой режим прячет редактор кривых, ключевые дорожки\n"
+                              "и тонкие параметры. Продвинутый показывает всё."));
         }
 
         ImGui::SameLine();
         ImGui::TextColored(simple ? ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled)
                                   : ImGui::GetStyleColorVec4(ImGuiCol_Text),
-                           "Advanced");
+                           "%s", T("Продвинутый"));
         ImGui::EndGroup();
     }
 

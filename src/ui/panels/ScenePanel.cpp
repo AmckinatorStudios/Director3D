@@ -11,6 +11,7 @@
 #include "sage/scene/Components.h"
 #include "ui/DirectorHost.h"
 #include "ui/Icons.h"
+#include "ui/Localization.h"
 #include "ui/Theme.h"
 
 namespace d3d {
@@ -37,12 +38,12 @@ ScenePanel::Category ScenePanel::CategoryOf(Scene& scene, entt::entity e) {
 
 const char* ScenePanel::CategoryName(Category c) {
     switch (c) {
-        case Category::Cameras:     return "Cameras";
-        case Category::Characters:  return "Characters";
-        case Category::Environment: return "Environment";
-        case Category::Lights:      return "Lights";
-        case Category::Effects:     return "Effects";
-        default:                    return "Other";
+        case Category::Cameras:     return T("Камеры");
+        case Category::Characters:  return T("Персонажи");
+        case Category::Environment: return T("Окружение");
+        case Category::Lights:      return T("Источники света");
+        case Category::Effects:     return T("Эффекты");
+        default:                    return T("Прочее");
     }
 }
 
@@ -116,17 +117,17 @@ void ScenePanel::DrawJoint(DirectorHost& host, Scene& scene, int entityId,
     if (animated) ImGui::PushStyleColor(ImGuiCol_Text, Theme::Colors::Accent);
 
     const bool open = ImGui::TreeNodeEx("##joint", flags, "%s",
-                                        name.empty() ? "(без имени)" : name.c_str());
+                                        name.empty() ? T("(без имени)") : name.c_str());
     if (animated) ImGui::PopStyleColor();
 
     if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) host.SelectBone(entityId, joint);
 
     if (ImGui::BeginPopupContextItem("##bonectx")) {
         host.SelectBone(entityId, joint);
-        if (ImGui::MenuItem("Поставить ключ на кость", "K")) host.KeyBone();
-        if (ImGui::MenuItem("Заключить всю позу")) host.KeyWholePose(entityId);
+        if (ImGui::MenuItem(T("Поставить ключ на кость"), "K")) host.KeyBone();
+        if (ImGui::MenuItem(T("Заключить всю позу"))) host.KeyWholePose(entityId);
         ImGui::Separator();
-        if (ImGui::MenuItem("Снять выбор кости")) host.SelectBone(entityId, -1);
+        if (ImGui::MenuItem(T("Снять выбор кости"))) host.SelectBone(entityId, -1);
         ImGui::EndPopup();
     }
 
@@ -143,13 +144,13 @@ void ScenePanel::DrawSkeletonTree(DirectorHost& host, Scene& scene, int entityId
         // Модель грузится лениво — это нормальное состояние в первые кадры, и
         // молчать о нём хуже, чем показать строку «скелет ещё не готов».
         ImGui::TreeNodeEx("##nosk", ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen,
-                          "Skeleton (загружается…)");
+                          "%s", T("Skeleton (загружается…)"));
         return;
     }
 
     ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth;
     if (host.SelectedBone().EntityId == entityId) flags |= ImGuiTreeNodeFlags_DefaultOpen;
-    if (!ImGui::TreeNodeEx("##skeleton", flags, "Skeleton (%d)", skeleton->Count())) return;
+    if (!ImGui::TreeNodeEx("##skeleton", flags, T("Скелет (%d)"), skeleton->Count())) return;
 
     // Список детей каждой кости — строим один раз на кадр: рекурсия по
     // «найти всех, у кого Parent == i» стоила бы O(n²) на каждом узле.
@@ -166,7 +167,7 @@ void ScenePanel::DrawSkeletonTree(DirectorHost& host, Scene& scene, int entityId
 
     if (count > 12) {
         ImGui::SetNextItemWidth(-1.0f);
-        ImGui::InputTextWithHint("##bonesearch", "Поиск кости...", &m_boneFilter);
+        ImGui::InputTextWithHint("##bonesearch", T("Поиск кости..."), &m_boneFilter);
     }
 
     if (m_boneFilter.empty()) {
@@ -188,7 +189,7 @@ void ScenePanel::DrawSkeletonTree(DirectorHost& host, Scene& scene, int entityId
             ImGui::PopID();
             ++shown;
         }
-        if (shown == 0) ImGui::TextDisabled("Костей с таким именем нет");
+        if (shown == 0) ImGui::TextDisabled("%s", T("Костей с таким именем нет"));
     }
 
     ImGui::TreePop();
@@ -238,7 +239,7 @@ void ScenePanel::DrawEntity(DirectorHost& host, Scene& scene, entt::entity e, bo
     if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceNoDisableHover)) {
         m_dragSource = id;
         ImGui::SetDragDropPayload("D3D_ENTITY", &m_dragSource, sizeof(int));
-        ImGui::Text("Перенести: %s", name.c_str());
+        ImGui::Text(T("Перенести: %s"), name.c_str());
         ImGui::EndDragDropSource();
     }
     if (ImGui::BeginDragDropTarget()) {
@@ -252,23 +253,23 @@ void ScenePanel::DrawEntity(DirectorHost& host, Scene& scene, entt::entity e, bo
     // --- Контекстное меню объекта ---
     if (ImGui::BeginPopupContextItem("##ctx")) {
         if (!host.IsSelected(id)) host.SetSelectedId(id);
-        if (ImGui::MenuItem("Переименовать", "F2")) {
+        if (ImGui::MenuItem(T("Переименовать"), "F2")) {
             m_renaming = id;
             std::snprintf(m_renameBuffer, sizeof(m_renameBuffer), "%s", name.c_str());
         }
-        if (ImGui::MenuItem("Дублировать", "Ctrl+D")) host.DuplicateSelected();
-        if (ImGui::MenuItem("Удалить", "Del")) host.DeleteSelected();
+        if (ImGui::MenuItem(T("Дублировать"), "Ctrl+D")) host.DuplicateSelected();
+        if (ImGui::MenuItem(T("Удалить"), "Del")) host.DeleteSelected();
         ImGui::Separator();
-        if (ImGui::MenuItem("Навести камеру", "F")) host.FocusOnSelected();
-        if (ImGui::MenuItem("Открепить от родителя")) host.SetParentOf(id, -1);
+        if (ImGui::MenuItem(T("Навести камеру"), "F")) host.FocusOnSelected();
+        if (ImGui::MenuItem(T("Открепить от родителя"))) host.SetParentOf(id, -1);
         ImGui::Separator();
-        if (ImGui::MenuItem("Поставить ключ", "K")) host.KeySelected();
+        if (ImGui::MenuItem(T("Поставить ключ"), "K")) host.KeySelected();
         if (reg.all_of<AnimatedModelComponent>(e)) {
-            if (ImGui::MenuItem("Заключить всю позу")) host.KeyWholePose(id);
-            if (ImGui::MenuItem("Снять ручную позу")) host.ResetPose(id);
+            if (ImGui::MenuItem(T("Заключить всю позу"))) host.KeyWholePose(id);
+            if (ImGui::MenuItem(T("Снять ручную позу"))) host.ResetPose(id);
         }
         if (reg.all_of<CameraComponent>(e)) {
-            if (ImGui::MenuItem("Сделать активной камерой", nullptr, host.ActiveCameraId() == id)) {
+            if (ImGui::MenuItem(T("Сделать активной камерой"), nullptr, host.ActiveCameraId() == id)) {
                 host.SetActiveCameraId(id);
             }
         }
@@ -294,7 +295,7 @@ void ScenePanel::DrawEntity(DirectorHost& host, Scene& scene, entt::entity e, bo
     ImGui::SetCursorPosX(eyeX);
     bool visible = item.Visible;
     if (Icons::ToggleIcon("vis", Icon::Eye, Icon::EyeOff, visible,
-                          visible ? "Скрыть объект" : "Показать объект")) {
+                          visible ? T("Скрыть объект") : T("Показать объект"))) {
         host.PushUndo();
         item.Visible = visible;
     }
@@ -310,7 +311,7 @@ void ScenePanel::DrawEntity(DirectorHost& host, Scene& scene, entt::entity e, bo
 }
 
 void ScenePanel::Draw(DirectorHost& host) {
-    ImGui::Begin("Scene");
+    ImGui::Begin((std::string(T("Сцена")) + "###Scene").c_str());
     Scene& scene = host.CurrentScene();
     auto& reg = scene.Registry();
 
@@ -319,32 +320,32 @@ void ScenePanel::Draw(DirectorHost& host) {
         const ImVec2 pos = ImGui::GetCursorScreenPos();
         ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 56.0f);
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(24, 4));
-        ImGui::InputTextWithHint("##search", "Search...", &m_filter);
+        ImGui::InputTextWithHint("##search", T("Поиск..."), &m_filter);
         ImGui::PopStyleVar();
         Icons::Draw(ImGui::GetWindowDrawList(), Icon::Search,
                     ImVec2(pos.x + 13.0f, pos.y + ImGui::GetFrameHeight() * 0.5f),
                     13.0f, Theme::Colors::TextFaint);
     }
     ImGui::SameLine();
-    if (Icons::IconButton("add", Icon::Add, "Добавить объект")) ImGui::OpenPopup("##addobj");
+    if (Icons::IconButton("add", Icon::Add, T("Добавить объект"))) ImGui::OpenPopup("##addobj");
     ImGui::SameLine();
-    if (Icons::IconButton("del", Icon::Trash, "Удалить выбранное", false, host.SelectedId() >= 0))
+    if (Icons::IconButton("del", Icon::Trash, T("Удалить выбранное"), false, host.SelectedId() >= 0))
         host.DeleteSelected();
 
     if (ImGui::BeginPopup("##addobj")) {
-        if (ImGui::MenuItem("Camera")) host.Create(CreateKind::Camera);
-        if (ImGui::MenuItem("Point Light")) host.Create(CreateKind::PointLight);
-        if (ImGui::MenuItem("Spot Light")) host.Create(CreateKind::SpotLight);
+        if (ImGui::MenuItem(T("Камера"))) host.Create(CreateKind::Camera);
+        if (ImGui::MenuItem(T("Точечный свет"))) host.Create(CreateKind::PointLight);
+        if (ImGui::MenuItem(T("Прожектор"))) host.Create(CreateKind::SpotLight);
         ImGui::Separator();
-        if (ImGui::MenuItem("Cube")) host.Create(CreateKind::Cube);
-        if (ImGui::MenuItem("Sphere")) host.Create(CreateKind::Sphere);
-        if (ImGui::MenuItem("Plane")) host.Create(CreateKind::Plane);
-        if (ImGui::MenuItem("Cylinder")) host.Create(CreateKind::Cylinder);
-        if (ImGui::MenuItem("Cone")) host.Create(CreateKind::Cone);
+        if (ImGui::MenuItem(T("Куб"))) host.Create(CreateKind::Cube);
+        if (ImGui::MenuItem(T("Сфера"))) host.Create(CreateKind::Sphere);
+        if (ImGui::MenuItem(T("Плоскость"))) host.Create(CreateKind::Plane);
+        if (ImGui::MenuItem(T("Цилиндр"))) host.Create(CreateKind::Cylinder);
+        if (ImGui::MenuItem(T("Конус"))) host.Create(CreateKind::Cone);
         ImGui::Separator();
-        if (ImGui::MenuItem("Character")) host.Create(CreateKind::Character);
-        if (ImGui::MenuItem("Particle Effect")) host.Create(CreateKind::ParticleEffect);
-        if (ImGui::MenuItem("Group")) host.Create(CreateKind::Group);
+        if (ImGui::MenuItem(T("Персонаж"))) host.Create(CreateKind::Character);
+        if (ImGui::MenuItem(T("Эффект частиц"))) host.Create(CreateKind::ParticleEffect);
+        if (ImGui::MenuItem(T("Группа"))) host.Create(CreateKind::Group);
         ImGui::EndPopup();
     }
 
@@ -356,7 +357,7 @@ void ScenePanel::Draw(DirectorHost& host) {
     // Корневой узел «Scene» — как в референсе; на него можно бросить объект,
     // чтобы открепить его от родителя.
     ImGui::SetNextItemOpen(true, ImGuiCond_FirstUseEver);
-    const bool rootOpen = ImGui::TreeNodeEx("Scene", ImGuiTreeNodeFlags_SpanAvailWidth |
+    const bool rootOpen = ImGui::TreeNodeEx((std::string(T("Сцена")) + "###sceneRoot").c_str(), ImGuiTreeNodeFlags_SpanAvailWidth |
                                                      ImGuiTreeNodeFlags_DefaultOpen);
     if (ImGui::BeginDragDropTarget()) {
         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("D3D_ENTITY")) {

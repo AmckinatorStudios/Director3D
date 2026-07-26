@@ -14,6 +14,7 @@
 #include "sage/scene/Components.h"
 #include "ui/DirectorHost.h"
 #include "ui/Icons.h"
+#include "ui/Localization.h"
 #include "ui/Theme.h"
 
 namespace d3d {
@@ -134,8 +135,8 @@ void PropertiesPanel::DrawKeyDiamond(DirectorHost& host, Property prop, bool has
     }
 
     if (hovered) {
-        ImGui::SetTooltip(hasKey ? "Ключ на этом кадре — клик уберёт его"
-                                 : "Поставить ключ на текущем кадре");
+        ImGui::SetTooltip("%s", hasKey ? T("Ключ на этом кадре — клик уберёт его")
+                                       : T("Поставить ключ на текущем кадре"));
     }
     if (clicked) {
         host.PushUndo();
@@ -149,15 +150,15 @@ void PropertiesPanel::DrawKeyDiamond(DirectorHost& host, Property prop, bool has
                 if (!curve.Empty()) { anyLeft = true; break; }
             }
             if (!anyLeft) host.Document().RemoveTrack(mutableTrack->Id);
-            host.SetStatus("Ключ убран");
+            host.SetStatus(T("Ключ убран"));
         } else if (joint >= 0) {
             // Костное свойство ключится напрямую: у KeyProperty кости нет, а
             // заводить ради этого ещё один метод хоста — лишний слой.
             host.Document().KeyFromScene(host.CurrentScene(), id, prop, host.CurrentTime(), joint);
-            host.SetStatus("Ключ на кости поставлен");
+            host.SetStatus(T("Ключ на кости поставлен"));
         } else {
             host.KeyProperty(id, prop);
-            host.SetStatus("Ключ поставлен");
+            host.SetStatus(T("Ключ поставлен"));
         }
     }
     ImGui::PopID();
@@ -233,7 +234,7 @@ void PropertiesPanel::DrawMorphSection(DirectorHost& host) {
     if (!am || !am->Model || am->Model->MorphCount() == 0) return;
 
     char title[64];
-    std::snprintf(title, sizeof(title), "Blend Shapes (%d)", am->Model->MorphCount());
+    std::snprintf(title, sizeof(title), T("Формы смешивания (%d)"), am->Model->MorphCount());
     if (!SectionHeader(title)) return;
 
     ImGui::Spacing();
@@ -256,20 +257,20 @@ void PropertiesPanel::DrawMorphSection(DirectorHost& host) {
     if (edited) host.NotifyObjectEdited(obj.Id());
 
     ImGui::Spacing();
-    if (ImGui::Button("Сбросить все")) {
+    if (ImGui::Button(T("Сбросить все"))) {
         host.PushUndo();
         std::fill(am->MorphWeights.begin(), am->MorphWeights.end(), 0.0f);
-        host.SetStatus("Блендшейпы сброшены");
+        host.SetStatus(T("Блендшейпы сброшены"));
     }
     ImGui::SameLine();
-    if (ImGui::Button("Заключить все")) {
+    if (ImGui::Button(T("Заключить все"))) {
         host.PushUndo();
         int keyed = 0;
         for (size_t i = 0; i < names.size(); ++i) {
             if (host.Document().KeyFromScene(scene, obj.Id(), Property::MorphWeight,
                                              host.CurrentTime(), (int)i)) ++keyed;
         }
-        host.SetStatus("Ключей на блендшейпах: " + std::to_string(keyed));
+        host.SetStatus(T("Ключей на блендшейпах: ") + std::to_string(keyed));
     }
     ImGui::Spacing();
 }
@@ -289,7 +290,7 @@ void PropertiesPanel::DrawIKSection(DirectorHost& host, int entityId, int joint)
     if (maxChain < 3) return;
 
     ImGui::Spacing();
-    if (!ImGui::TreeNodeEx("##ik", ImGuiTreeNodeFlags_SpanAvailWidth, "Обратная кинематика")) return;
+    if (!ImGui::TreeNodeEx("##ik", ImGuiTreeNodeFlags_SpanAvailWidth, "%s", T("Обратная кинематика"))) return;
 
     // Смена кости обнуляет цель: ручка от прошлой конечности на новой означала
     // бы рывок в чужую точку при первом же нажатии.
@@ -303,43 +304,43 @@ void PropertiesPanel::DrawIKSection(DirectorHost& host, int entityId, int joint)
     }
 
     ImGui::Spacing();
-    RowLabel("Костей");
+    RowLabel(T("Костей"));
     ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - kKeyColumn);
     ImGui::SliderInt("##chain", &m_ikChainLength, 3, std::min(maxChain, 12), "%d");
     if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Длина цепочки от выбранной кости вверх по скелету.\n"
+        ImGui::SetTooltip("%s", T("Длина цепочки от выбранной кости вверх по скелету.\n"
                           "Три кости — аналитическое решение (рука, нога).\n"
-                          "Больше — FABRIK: хвост, позвоночник, щупальце.");
+                          "Больше — FABRIK: хвост, позвоночник, щупальце."));
     }
 
     ImGui::Spacing();
-    ImGui::TextUnformatted("Цель (мир)");
+    ImGui::TextUnformatted(T("Цель (мир)"));
     AxisVec3(nullptr, &m_ikTarget.x, 0.01f, "%.3f", kKeyColumn);
-    if (ImGui::Button("Взять от кости")) {
+    if (ImGui::Button(T("Взять от кости"))) {
         glm::vec3 here(0.0f);
         if (BoneWorldPosition(scene, entityId, joint, here)) m_ikTarget = here;
     }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Поставить цель туда, где кость сейчас");
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", T("Поставить цель туда, где кость сейчас"));
 
     ImGui::Spacing();
-    ImGui::Checkbox("Задать полюс", &m_ikUsePole);
+    ImGui::Checkbox(T("Задать полюс"), &m_ikUsePole);
     if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Куда смотрит локоть или колено.\n"
-                          "Без полюса плоскость сгиба берётся от текущей позы.");
+        ImGui::SetTooltip("%s", T("Куда смотрит локоть или колено.\n"
+                          "Без полюса плоскость сгиба берётся от текущей позы."));
     }
     if (m_ikUsePole) AxisVec3(nullptr, &m_ikPole.x, 0.01f, "%.3f", kKeyColumn);
 
     ImGui::Spacing();
-    RowLabel("Сила");
+    RowLabel(T("Сила"));
     ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - kKeyColumn);
     ImGui::SliderFloat("##ikweight", &m_ikWeight, 0.0f, 1.0f, "%.2f");
     if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Смешивание с текущей позой: 0 — IK не влияет,\n"
-                          "1 — поза целиком от солвера.");
+        ImGui::SetTooltip("%s", T("Смешивание с текущей позой: 0 — IK не влияет,\n"
+                          "1 — поза целиком от солвера."));
     }
 
     ImGui::Spacing();
-    if (ImGui::Button("Дотянуться")) {
+    if (ImGui::Button(T("Дотянуться"))) {
         host.PushUndo();
         bool reached = false;
         const glm::vec3* pole = m_ikUsePole ? &m_ikPole : nullptr;
@@ -347,18 +348,18 @@ void PropertiesPanel::DrawIKSection(DirectorHost& host, int entityId, int joint)
                         reached)) {
             m_ikReached = reached;
             host.NotifyObjectEdited(entityId);
-            host.SetStatus(reached ? "IK: цель достигнута"
-                                   : "IK: цель дальше вытянутой конечности");
+            host.SetStatus(reached ? T("IK: цель достигнута")
+                                   : T("IK: цель дальше вытянутой конечности"));
         } else {
-            host.SetStatus("IK не сработал — скелет не готов или цепочка короткая");
+            host.SetStatus(T("IK не сработал — скелет не готов или цепочка короткая"));
         }
     }
     ImGui::SameLine();
-    if (ImGui::Button("Заключить позу##ik")) host.KeyWholePose(entityId);
+    if (ImGui::Button(T("Заключить позу##ik"))) host.KeyWholePose(entityId);
 
     if (!m_ikReached) {
         ImGui::PushStyleColor(ImGuiCol_Text, Theme::Colors::Warning);
-        ImGui::TextWrapped("Цель дальше, чем достаёт конечность — она вытянута в её сторону.");
+        ImGui::TextWrapped("%s", T("Цель дальше, чем достаёт конечность — она вытянута в её сторону."));
         ImGui::PopStyleColor();
     }
 
@@ -376,15 +377,15 @@ void PropertiesPanel::DrawBoneSection(DirectorHost& host) {
 
     const sage::anim::Joint& joint = skeleton->Joints[(size_t)bone.Joint];
     char title[160];
-    std::snprintf(title, sizeof(title), "Bone — %s",
-                  joint.Name.empty() ? "(без имени)" : joint.Name.c_str());
+    std::snprintf(title, sizeof(title), T("Кость — %s"),
+                  joint.Name.empty() ? T("(без имени)") : joint.Name.c_str());
     if (!SectionHeader(title)) return;
 
     ImGui::Spacing();
     if (joint.Parent >= 0 && joint.Parent < skeleton->Count()) {
-        ImGui::TextDisabled("Родитель: %s", skeleton->Joints[(size_t)joint.Parent].Name.c_str());
+        ImGui::TextDisabled(T("Родитель: %s"), skeleton->Joints[(size_t)joint.Parent].Name.c_str());
     } else {
-        ImGui::TextDisabled("Корневая кость");
+        ImGui::TextDisabled("%s", T("Корневая кость"));
     }
     ImGui::Spacing();
 
@@ -395,26 +396,26 @@ void PropertiesPanel::DrawBoneSection(DirectorHost& host) {
     glm::quat r;
     if (!ReadBoneLocal(scene, bone.EntityId, bone.Joint, t, r, s)) {
         ImGui::PushStyleColor(ImGuiCol_Text, Theme::Colors::TextDim);
-        ImGui::TextWrapped("Поза ещё не посчитана — модель загружается.");
+        ImGui::TextWrapped("%s", T("Поза ещё не посчитана — модель загружается."));
         ImGui::PopStyleColor();
         return;
     }
     glm::vec3 euler = EulerDegreesFromQuat(r);
 
     bool edited = false;
-    if (DrawVec3Row(host, "Location", &t.x, Property::BonePosition, 0.005f, "%.4f", bone.Joint)) {
+    if (DrawVec3Row(host, T("Положение"), &t.x, Property::BonePosition, 0.005f, "%.4f", bone.Joint)) {
         const float v[3] = {t.x, t.y, t.z};
         WriteBoneChannel(scene, bone.EntityId, bone.Joint, BoneChannel::Translation, v);
         edited = true;
     }
     ImGui::Spacing();
-    if (DrawVec3Row(host, "Rotation", &euler.x, Property::BoneRotation, 0.25f, "%.2f", bone.Joint)) {
+    if (DrawVec3Row(host, T("Поворот"), &euler.x, Property::BoneRotation, 0.25f, "%.2f", bone.Joint)) {
         const float v[3] = {euler.x, euler.y, euler.z};
         WriteBoneChannel(scene, bone.EntityId, bone.Joint, BoneChannel::Rotation, v);
         edited = true;
     }
     ImGui::Spacing();
-    if (DrawVec3Row(host, "Scale", &s.x, Property::BoneScale, 0.005f, "%.4f", bone.Joint)) {
+    if (DrawVec3Row(host, T("Масштаб"), &s.x, Property::BoneScale, 0.005f, "%.4f", bone.Joint)) {
         const float v[3] = {s.x, s.y, s.z};
         WriteBoneChannel(scene, bone.EntityId, bone.Joint, BoneChannel::Scale, v);
         edited = true;
@@ -424,11 +425,11 @@ void PropertiesPanel::DrawBoneSection(DirectorHost& host) {
     DrawIKSection(host, bone.EntityId, bone.Joint);
 
     ImGui::Spacing();
-    if (ImGui::Button("Ключ на кость")) host.KeyBone();
+    if (ImGui::Button(T("Ключ на кость"))) host.KeyBone();
     ImGui::SameLine();
-    if (ImGui::Button("Заключить позу")) host.KeyWholePose(bone.EntityId);
+    if (ImGui::Button(T("Заключить позу"))) host.KeyWholePose(bone.EntityId);
     ImGui::SameLine();
-    if (ImGui::Button("Сброс")) {
+    if (ImGui::Button(T("Сброс"))) {
         // Сбрасываем только ЭТУ кость: «сброс всей позы» есть в дереве сцены, и
         // потерять всю работу по кнопке рядом с одной костью было бы обидно.
         host.PushUndo();
@@ -436,31 +437,31 @@ void PropertiesPanel::DrawBoneSection(DirectorHost& host) {
                                     BoneChannel::Scale}) {
             ClearBoneChannel(scene, bone.EntityId, bone.Joint, channel);
         }
-        host.SetStatus("Кость вернулась под управление клипа");
+        host.SetStatus(T("Кость вернулась под управление клипа"));
     }
     if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Снять ручную позу с ЭТОЙ кости — она снова пойдёт за клипом");
+        ImGui::SetTooltip("%s", T("Снять ручную позу с ЭТОЙ кости — она снова пойдёт за клипом"));
     }
 
     ImGui::Spacing();
     // TextWrapped, а не TextDisabled: панель узкая, и однострочная подсказка
     // обрывалась на полуслове («…относительно родител»).
     ImGui::PushStyleColor(ImGuiCol_Text, Theme::Colors::TextDim);
-    ImGui::TextWrapped("Значения локальные — относительно родительской кости.");
+    ImGui::TextWrapped("%s", T("Значения локальные — относительно родительской кости."));
     ImGui::PopStyleColor();
     ImGui::Spacing();
 }
 
 void PropertiesPanel::Draw(DirectorHost& host) {
-    ImGui::Begin("Properties");
+    ImGui::Begin((std::string(T("Свойства")) + "###Properties").c_str());
 
     GameObject obj = host.SelectedObject();
     if (!obj.Valid()) {
         ImGui::Spacing();
-        ImGui::TextDisabled("Ничего не выбрано.");
+        ImGui::TextDisabled("%s", T("Ничего не выбрано."));
         ImGui::Spacing();
-        ImGui::TextWrapped("Выберите объект в дереве сцены или кликните по нему во вьюпорте — "
-                           "здесь появятся его свойства и ромбы для постановки ключей.");
+        ImGui::TextWrapped("%s", T("Выберите объект в дереве сцены или кликните по нему во вьюпорте — "
+                           "здесь появятся его свойства и ромбы для постановки ключей."));
         ImGui::End();
         return;
     }
@@ -476,7 +477,7 @@ void PropertiesPanel::Draw(DirectorHost& host) {
         std::string name = obj.Name();
         // Место под галочку Active справа: ширину считаем от её реального
         // размера, иначе на узкой панели подпись обрезается.
-        const float activeWidth = ImGui::CalcTextSize("Active").x + ImGui::GetFrameHeight() +
+        const float activeWidth = ImGui::CalcTextSize(T("Активен")).x + ImGui::GetFrameHeight() +
                                   ImGui::GetStyle().ItemSpacing.x * 2.0f;
         ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - activeWidth);
         char buffer[128];
@@ -487,20 +488,20 @@ void PropertiesPanel::Draw(DirectorHost& host) {
         }
         ImGui::SameLine();
         StageItemComponent& item = reg.get_or_emplace<StageItemComponent>(e);
-        if (ImGui::Checkbox("Active", &item.Visible)) host.PushUndo();
+        if (ImGui::Checkbox(T("Активен"), &item.Visible)) host.PushUndo();
     }
     ImGui::Separator();
 
     // --- Transform ---
-    if (SectionHeader("Transform")) {
+    if (SectionHeader(T("Трансформация"))) {
         Transform& tr = obj.GetTransform();
         bool edited = false;
         ImGui::Spacing();
-        edited |= DrawVec3Row(host, "Location", &tr.Position.x, Property::Position, 0.01f, "%.3f");
+        edited |= DrawVec3Row(host, T("Положение"), &tr.Position.x, Property::Position, 0.01f, "%.3f");
         ImGui::Spacing();
-        edited |= DrawVec3Row(host, "Rotation", &tr.Rotation.x, Property::Rotation, 0.25f, "%.3f");
+        edited |= DrawVec3Row(host, T("Поворот"), &tr.Rotation.x, Property::Rotation, 0.25f, "%.3f");
         ImGui::Spacing();
-        edited |= DrawVec3Row(host, "Scale", &tr.Scale.x, Property::Scale, 0.01f, "%.3f");
+        edited |= DrawVec3Row(host, T("Масштаб"), &tr.Scale.x, Property::Scale, 0.01f, "%.3f");
         ImGui::Spacing();
         if (edited) host.NotifyObjectEdited(id);
     }
@@ -515,57 +516,57 @@ void PropertiesPanel::Draw(DirectorHost& host) {
 
     // --- Camera ---
     if (CameraComponent* cam = reg.try_get<CameraComponent>(e)) {
-        if (SectionHeader("Camera")) {
+        if (SectionHeader(T("Камера"))) {
             bool edited = false;
             const bool isActive = host.ActiveCameraId() == id;
-            if (ImGui::RadioButton("Активная камера (с неё идёт рендер)", isActive)) {
+            if (ImGui::RadioButton(T("Активная камера (с неё идёт рендер)"), isActive)) {
                 host.SetActiveCameraId(id);
             }
             ImGui::Spacing();
 
-            RowLabel("Projection");
+            RowLabel(T("Проекция"));
             ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - kKeyColumn);
             // Ортографической камеры у движка нет — показываем честно один
             // рабочий вариант, а не выпадающий список с неработающим пунктом.
             ImGui::BeginDisabled(true);
             int projection = 0;
-            ImGui::Combo("##proj", &projection, "Perspective\0");
+            ImGui::Combo("##proj", &projection, T("Перспектива\0"));
             ImGui::EndDisabled();
 
-            edited |= DrawFloatRow(host, "FOV", &cam->Fov, Property::CameraFov, 0.2f, 1.0f, 179.0f, "%.2f");
+            edited |= DrawFloatRow(host, T("Угол обзора"), &cam->Fov, Property::CameraFov, 0.2f, 1.0f, 179.0f, "%.2f");
 
             // Near/Far — строки без ромба: их анимация даёт артефакты глубины,
             // а не выразительный приём, поэтому ключей для них мы не заводим.
-            RowLabel("Near");
+            RowLabel(T("Ближняя"));
             ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - kKeyColumn);
             if (ImGui::DragFloat("##nearclip", &cam->NearClip, 0.01f, 0.001f, 10.0f, "%.2f")) edited = true;
             host.TrackLastItem();
-            RowLabel("Far");
+            RowLabel(T("Дальняя"));
             ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - kKeyColumn);
             if (ImGui::DragFloat("##farclip", &cam->FarClip, 1.0f, 1.0f, 10000.0f, "%.2f")) edited = true;
             host.TrackLastItem();
 
             CineCameraComponent& cine = reg.get_or_emplace<CineCameraComponent>(e);
-            edited |= DrawFloatRow(host, "Focus Distance", &cine.FocusDistance,
+            edited |= DrawFloatRow(host, T("Дистанция фокуса"), &cine.FocusDistance,
                                    Property::CameraFocusDistance, 0.05f, 0.01f, 500.0f, "%.2f");
-            if (ImGui::Checkbox("Auto Focus", &cine.AutoFocus)) { host.PushUndo(); edited = true; }
-            edited |= DrawFloatRow(host, "Aperture", &cine.Aperture,
+            if (ImGui::Checkbox(T("Автофокус"), &cine.AutoFocus)) { host.PushUndo(); edited = true; }
+            edited |= DrawFloatRow(host, T("Диафрагма"), &cine.Aperture,
                                    Property::CameraAperture, 0.01f, 0.7f, 32.0f, "%.2f");
-            if (ImGui::Checkbox("Depth of Field", &cine.DepthOfField)) { host.PushUndo(); edited = true; }
-            if (ImGui::Checkbox("Film Back", &cine.FilmBack)) { host.PushUndo(); edited = true; }
+            if (ImGui::Checkbox(T("Глубина резкости"), &cine.DepthOfField)) { host.PushUndo(); edited = true; }
+            if (ImGui::Checkbox(T("Кадровое окно"), &cine.FilmBack)) { host.PushUndo(); edited = true; }
             if (!simple) {
                 ImGui::SameLine(kLabelWidth + 24.0f);
                 ImGui::SetNextItemWidth(90.0f);
                 if (ImGui::DragFloat("##aspect", &cine.AspectRatio, 0.01f, 1.0f, 3.0f, "%.2f:1")) edited = true;
                 host.TrackLastItem();
             }
-            if (ImGui::Checkbox("Camera Shake", &cine.CameraShake)) { host.PushUndo(); edited = true; }
+            if (ImGui::Checkbox(T("Тряска камеры"), &cine.CameraShake)) { host.PushUndo(); edited = true; }
             if (cine.CameraShake && !simple) {
-                RowLabel("Amplitude");
+                RowLabel(T("Амплитуда"));
                 ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - kKeyColumn);
                 if (ImGui::DragFloat("##shakeAmp", &cine.ShakeAmplitude, 0.005f, 0.0f, 1.0f, "%.3f")) edited = true;
                 host.TrackLastItem();
-                RowLabel("Frequency");
+                RowLabel(T("Частота"));
                 ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - kKeyColumn);
                 if (ImGui::DragFloat("##shakeFreq", &cine.ShakeFrequency, 0.1f, 0.1f, 30.0f, "%.2f")) edited = true;
                 host.TrackLastItem();
@@ -574,18 +575,18 @@ void PropertiesPanel::Draw(DirectorHost& host) {
         }
 
         // --- Post Process (свойство камеры, как в референсе) ---
-        if (SectionHeader("Post Process")) {
+        if (SectionHeader(T("Постобработка"))) {
             CineCameraComponent& cine = reg.get_or_emplace<CineCameraComponent>(e);
             bool edited = false;
-            edited |= DrawEffectRow(host, "Bloom", &cine.Bloom, &cine.BloomIntensity,
+            edited |= DrawEffectRow(host, T("Свечение"), &cine.Bloom, &cine.BloomIntensity,
                                     Property::PostBloom, 0.0f, 2.0f);
-            edited |= DrawEffectRow(host, "Motion Blur", &cine.MotionBlur, &cine.MotionBlurAmount,
+            edited |= DrawEffectRow(host, T("Смаз движения"), &cine.MotionBlur, &cine.MotionBlurAmount,
                                     Property::PostMotionBlur, 0.0f, 1.0f);
-            edited |= DrawEffectRow(host, "Color Grading", &cine.ColorGrading, &cine.ColorGradingAmount,
+            edited |= DrawEffectRow(host, T("Цветокоррекция"), &cine.ColorGrading, &cine.ColorGradingAmount,
                                     Property::PostBloom, 0.0f, 2.0f);
-            edited |= DrawEffectRow(host, "Vignette", &cine.Vignette, &cine.VignetteAmount,
+            edited |= DrawEffectRow(host, T("Виньетка"), &cine.Vignette, &cine.VignetteAmount,
                                     Property::PostVignette, 0.0f, 1.0f);
-            edited |= DrawEffectRow(host, "Chromatic Aberration", &cine.ChromaticAberration,
+            edited |= DrawEffectRow(host, T("Хроматическая аберрация"), &cine.ChromaticAberration,
                                     &cine.ChromaticAmount, Property::PostChromatic, 0.0f, 1.0f);
             if (edited) host.NotifyObjectEdited(id);
             if (!simple) {
@@ -593,8 +594,8 @@ void PropertiesPanel::Draw(DirectorHost& host) {
                 // Раньше подсказка была разбита на две строки вручную и всё
                 // равно не помещалась: перенос по ширине панели надёжнее.
                 ImGui::PushStyleColor(ImGuiCol_Text, Theme::Colors::TextDim);
-                ImGui::TextWrapped("Motion Blur — камерный: смазывает движение и поворот камеры. "
-                                   "Смаз от движения самих объектов не считается.");
+                ImGui::TextWrapped("%s", T("Motion Blur — камерный: смазывает движение и поворот камеры. "
+                                   "Смаз от движения самих объектов не считается."));
                 ImGui::PopStyleColor();
             }
         }
@@ -602,34 +603,34 @@ void PropertiesPanel::Draw(DirectorHost& host) {
 
     // --- Light ---
     if (LightComponent* light = reg.try_get<LightComponent>(e)) {
-        if (SectionHeader("Light")) {
+        if (SectionHeader(T("Свет"))) {
             bool edited = false;
-            RowLabel("Type");
+            RowLabel(T("Тип"));
             ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - kKeyColumn);
             int kind = light->Kind == LightComponent::Type::Spot ? 1 : 0;
-            if (ImGui::Combo("##ltype", &kind, "Point\0Spot\0")) {
+            if (ImGui::Combo("##ltype", &kind, T("Точечный\0Прожектор\0"))) {
                 host.PushUndo();
                 light->Kind = kind == 1 ? LightComponent::Type::Spot : LightComponent::Type::Point;
                 edited = true;
             }
 
-            ImGui::TextUnformatted("Color");
+            ImGui::TextUnformatted(T("Цвет"));
             ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - kKeyColumn);
             if (ImGui::ColorEdit3("##lcolor", &light->Color.x, ImGuiColorEditFlags_Float)) edited = true;
             host.TrackLastItem();
             DrawKeyDiamond(host, Property::LightColor, true);
 
-            edited |= DrawFloatRow(host, "Intensity", &light->Intensity,
+            edited |= DrawFloatRow(host, T("Яркость"), &light->Intensity,
                                    Property::LightIntensity, 0.02f, 0.0f, 100.0f, "%.2f");
-            edited |= DrawFloatRow(host, "Range", &light->Range,
+            edited |= DrawFloatRow(host, T("Дальность"), &light->Range,
                                    Property::LightRange, 0.05f, 0.01f, 200.0f, "%.2f");
 
             if (light->Kind == LightComponent::Type::Spot) {
-                RowLabel("Inner Cone");
+                RowLabel(T("Внутренний конус"));
                 ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - kKeyColumn);
                 if (ImGui::SliderFloat("##inner", &light->InnerConeDeg, 0.0f, 89.0f, "%.1f°")) edited = true;
                 host.TrackLastItem();
-                RowLabel("Outer Cone");
+                RowLabel(T("Внешний конус"));
                 ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - kKeyColumn);
                 if (ImGui::SliderFloat("##outer", &light->OuterConeDeg, 0.0f, 90.0f, "%.1f°")) edited = true;
                 host.TrackLastItem();
@@ -643,16 +644,16 @@ void PropertiesPanel::Draw(DirectorHost& host) {
 
     // --- Mesh / материал ---
     if (MeshRendererComponent* mr = reg.try_get<MeshRendererComponent>(e)) {
-        if (mr->Ref.type != MeshRef::Type::None && SectionHeader("Appearance")) {
-            ImGui::TextUnformatted("Color");
+        if (mr->Ref.type != MeshRef::Type::None && SectionHeader(T("Внешний вид"))) {
+            ImGui::TextUnformatted(T("Цвет"));
             ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - kKeyColumn);
             bool edited = ImGui::ColorEdit3("##mcolor", &mr->Color.x, ImGuiColorEditFlags_Float);
             host.TrackLastItem();
             DrawKeyDiamond(host, Property::Color, true);
             if (!mr->MaterialPath.empty()) {
-                ImGui::TextDisabled("Материал: %s", ShortPath(mr->MaterialPath).c_str());
+                ImGui::TextDisabled(T("Материал: %s"), ShortPath(mr->MaterialPath).c_str());
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", mr->MaterialPath.c_str());
-                ImGui::TextDisabled("(материал перекрывает цвет)");
+                ImGui::TextDisabled("%s", T("(материал перекрывает цвет)"));
             }
             if (edited) host.NotifyObjectEdited(id);
         }
@@ -660,18 +661,18 @@ void PropertiesPanel::Draw(DirectorHost& host) {
 
     // --- Персонаж (скелетная модель) ---
     if (AnimatedModelComponent* am = reg.try_get<AnimatedModelComponent>(e)) {
-        if (SectionHeader("Character")) {
-            ImGui::TextDisabled("Модель: %s", am->Path.empty() ? "<встроенная демо>"
+        if (SectionHeader(T("Персонаж"))) {
+            ImGui::TextDisabled(T("Модель: %s"), am->Path.empty() ? T("<встроенная демо>")
                                                                : ShortPath(am->Path).c_str());
             if (!am->Path.empty() && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", am->Path.c_str());
             const int clipCount = am->Model ? (int)am->Model->Clips().size() : 0;
             if (clipCount == 0) {
                 ImGui::PushStyleColor(ImGuiCol_Text, Theme::Colors::TextDim);
-            ImGui::TextWrapped("Клипов в модели нет — анимировать можно только трансформом.");
+            ImGui::TextWrapped("%s", T("Клипов в модели нет — анимировать можно только трансформом."));
             ImGui::PopStyleColor();
             } else {
-                ImGui::Text("Клипов: %d", clipCount);
-                RowLabel("Clip");
+                ImGui::Text(T("Клипов: %d"), clipCount);
+                RowLabel(T("Клип"));
                 ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - kKeyColumn);
                 if (ImGui::BeginCombo("##clip", am->Model->Clips()[(size_t)am->Clip % (size_t)clipCount].Name.c_str())) {
                     for (int i = 0; i < clipCount; ++i) {
@@ -686,7 +687,7 @@ void PropertiesPanel::Draw(DirectorHost& host) {
                 ImGui::Spacing();
                 // Кнопка кладёт блок клипа на таймлайн — это и есть способ
                 // «собрать» анимацию персонажа из готовых клипов.
-                if (ImGui::Button("Положить клип на таймлайн", ImVec2(-1, 0))) {
+                if (ImGui::Button(T("Положить клип на таймлайн"), ImVec2(-1, 0))) {
                     host.PushUndo();
                     ClipTrack& track = host.Document().EnsureClipTrack(id);
                     ClipBlock block;
@@ -696,7 +697,7 @@ void PropertiesPanel::Draw(DirectorHost& host) {
                     const float clipLen = am->Model->Clips()[(size_t)am->Clip].Duration;
                     block.Duration = clipLen > 0.01f ? clipLen : 1.0f;
                     track.Blocks.push_back(block);
-                    host.SetStatus("Клип добавлен на таймлайн");
+                    host.SetStatus(T("Клип добавлен на таймлайн"));
                 }
             }
         }
@@ -709,15 +710,15 @@ void PropertiesPanel::Draw(DirectorHost& host) {
         for (const Track& t : doc.Tracks) {
             if (t.TargetId == id) ++ownTracks;
         }
-        if (ownTracks > 0 && SectionHeader("Animation Tracks", false)) {
+        if (ownTracks > 0 && SectionHeader(T("Дорожки анимации"), false)) {
             for (Track& t : doc.Tracks) {
                 if (t.TargetId != id) continue;
                 int keys = 0;
                 for (const Curve& c : t.Channels) keys += c.Count();
                 ImGui::PushID(t.Id);
-                ImGui::Text("%s — ключей: %d", PropertyInfoOf(t.Prop).Label, keys);
+                ImGui::Text(T("%s — ключей: %d"), T(PropertyInfoOf(t.Prop).Label), keys);
                 ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - 60.0f);
-                ImGui::Checkbox("Mute", &t.Muted);
+                ImGui::Checkbox(T("Без звука"), &t.Muted);
                 ImGui::PopID();
             }
         }

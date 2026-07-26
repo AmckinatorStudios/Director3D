@@ -84,6 +84,14 @@ jobs:
         working-directory: Director3D
         run: cmake --build build -j"$(nproc)"
 
+      # Полноту перевода можно посчитать только по исходникам: ключ равен самой
+      # русской строке, и полного их списка во время работы не существует.
+      # Проверка стоит до тестов, потому что чинится она правкой словаря, а не
+      # кода, и знать о ней лучше сразу.
+      - name: Localization coverage
+        working-directory: Director3D
+        run: python3 scripts/check_i18n.py
+
       # Ядро анимации (кривые/дорожки/документ/undo/проект/WAV) — без окна и GL.
       - name: Self-test (animation core)
         working-directory: Director3D

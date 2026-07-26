@@ -10,6 +10,7 @@
 #include "sage/render/ResourceManager.h"
 #include "sage/rhi/GraphicsDevice.h"
 #include "ui/DirectorHost.h"
+#include "ui/Localization.h"
 #include "ui/Theme.h"
 
 namespace d3d {
@@ -48,7 +49,7 @@ void StatusBarPanel::Draw(DirectorHost& host) {
 
     ImGui::AlignTextToFramePadding();
     ImGui::TextColored(ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled),
-                       "Director 3D v0.1.0 — на SAGE Engine %s", kSageEngineVersion);
+                       T("Director 3D v0.1.0 — на SAGE Engine %s"), kSageEngineVersion);
 
     Divider();
     ImGui::TextColored(ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled), "GPU: %s",
@@ -56,7 +57,7 @@ void StatusBarPanel::Draw(DirectorHost& host) {
 
     Divider();
     const ResourceManager::Stats res = ResourceManager::Instance().GetStats();
-    ImGui::TextColored(ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled), "Текстуры: %.1f МБ",
+    ImGui::TextColored(ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled), T("Текстуры: %.1f МБ"),
                        (double)res.TextureBytes / (1024.0 * 1024.0));
 
     Divider();
@@ -72,13 +73,13 @@ void StatusBarPanel::Draw(DirectorHost& host) {
     Divider();
     const sage::ecs::RenderStats& stats = host.Renderer().LastStats();
     ImGui::TextColored(ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled),
-                       "Отрисовано: %d / %d", stats.Drawn, stats.Total);
+                       T("Отрисовано: %d / %d"), stats.Drawn, stats.Total);
 
     // --- Правая часть: сообщение, проект, автосохранение ---
     const std::string& status = host.Status();
     const AnimationDocument& doc = host.Document();
     char right[256];
-    std::snprintf(right, sizeof(right), "Проект: %s%s     Сохранено: %s",
+    std::snprintf(right, sizeof(right), T("Проект: %s%s     Сохранено: %s"),
                   doc.Name.c_str(), host.Dirty() ? " *" : "", m_savedAt);
     const float rightWidth = ImGui::CalcTextSize(right).x;
 

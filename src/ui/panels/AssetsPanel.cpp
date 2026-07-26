@@ -9,6 +9,7 @@
 
 #include "ui/DirectorHost.h"
 #include "ui/Icons.h"
+#include "ui/Localization.h"
 #include "ui/Theme.h"
 
 namespace fs = std::filesystem;
@@ -147,15 +148,15 @@ void AssetsPanel::DrawGrid(DirectorHost& host) {
                 host.AssetsDir() = entry.Path;
                 m_dirty = true;
             } else if (entry.Type == Entry::Kind::Model) {
-                if (host.ImportAsset(entry.Path) < 0) host.SetStatus("Не удалось импортировать: " + entry.Name);
+                if (host.ImportAsset(entry.Path) < 0) host.SetStatus(T("Не удалось импортировать: ") + entry.Name);
             } else if (entry.Type == Entry::Kind::Audio) {
                 host.PushUndo();
                 if (host.Document().Audio.Load(entry.Path.string())) {
-                    host.SetStatus("Звуковая дорожка: " + entry.Name);
+                    host.SetStatus(T("Звуковая дорожка: ") + entry.Name);
                 }
             } else if (entry.Type == Entry::Kind::Scene) {
                 std::string err;
-                if (!host.OpenProject(entry.Path, err)) host.SetStatus("Не открылось: " + err);
+                if (!host.OpenProject(entry.Path, err)) host.SetStatus(T("Не открылось: ") + err);
             }
         }
 
@@ -183,10 +184,10 @@ void AssetsPanel::DrawGrid(DirectorHost& host) {
         if (Theme::SmallFont()) ImGui::PopFont();
 
         if (hovered) {
-            if (entry.Directory) ImGui::SetTooltip("%s\nДвойной клик — открыть папку", entry.Name.c_str());
-            else ImGui::SetTooltip("%s\n%.1f КБ%s", entry.Name.c_str(), (double)entry.Size / 1024.0,
-                                   entry.Type == Entry::Kind::Model ? "\nДвойной клик — импорт в сцену"
-                                 : entry.Type == Entry::Kind::Audio ? "\nДвойной клик — на звуковую дорожку"
+            if (entry.Directory) ImGui::SetTooltip(T("%s\nДвойной клик — открыть папку"), entry.Name.c_str());
+            else ImGui::SetTooltip(T("%s\n%.1f КБ%s"), entry.Name.c_str(), (double)entry.Size / 1024.0,
+                                   entry.Type == Entry::Kind::Model ? T("\nДвойной клик — импорт в сцену")
+                                 : entry.Type == Entry::Kind::Audio ? T("\nДвойной клик — на звуковую дорожку")
                                                                     : "");
         }
 
@@ -196,18 +197,18 @@ void AssetsPanel::DrawGrid(DirectorHost& host) {
 
     if (drawn == 0) {
         ImGui::Spacing();
-        ImGui::TextDisabled(m_filter.empty() ? "Папка пуста." : "Ничего не найдено.");
+        ImGui::TextDisabled("%s", m_filter.empty() ? T("Папка пуста.") : T("Ничего не найдено."));
     }
 }
 
 void AssetsPanel::Draw(DirectorHost& host) {
-    ImGui::Begin("Assets");
+    ImGui::Begin((std::string(T("Ресурсы")) + "###Assets").c_str());
 
     if (ImGui::BeginTabBar("##assetTabs")) {
         // «Файлы», а не «Assets»: вкладка дока над ними уже называется Assets,
         // и одинаковое слово двумя строками подряд читается как сбой раскладки.
-        if (ImGui::BeginTabItem("Файлы")) { m_tab = 0; ImGui::EndTabItem(); }
-        if (ImGui::BeginTabItem("Заготовки")) { m_tab = 1; ImGui::EndTabItem(); }
+        if (ImGui::BeginTabItem(T("Файлы"))) { m_tab = 0; ImGui::EndTabItem(); }
+        if (ImGui::BeginTabItem(T("Заготовки"))) { m_tab = 1; ImGui::EndTabItem(); }
         ImGui::EndTabBar();
     }
 
@@ -215,10 +216,10 @@ void AssetsPanel::Draw(DirectorHost& host) {
         // Пресеты — быстрые заготовки сцены: не файлы на диске, а рецепты
         // «поставить и сразу снимать».
         ImGui::Spacing();
-        ImGui::TextWrapped("Готовые заготовки: собирают базовую сцену за один клик, "
-                           "чтобы можно было сразу анимировать, а не расставлять свет.");
+        ImGui::TextWrapped("%s", T("Готовые заготовки: собирают базовую сцену за один клик, "
+                           "чтобы можно было сразу анимировать, а не расставлять свет."));
         ImGui::Spacing();
-        if (ImGui::Button("Three-Point Light Setup", ImVec2(-1, 0))) {
+        if (ImGui::Button(T("Схема из трёх источников"), ImVec2(-1, 0))) {
             host.PushUndo();
             const int key = host.Create(CreateKind::SpotLight);
             const int fill = host.Create(CreateKind::PointLight);
@@ -235,9 +236,9 @@ void AssetsPanel::Draw(DirectorHost& host) {
             }
             if (GameObject o = scene.Get(fill); o.Valid()) o.GetTransform().Position = {-3.5f, 2.0f, 2.5f};
             if (GameObject o = scene.Get(rim); o.Valid()) o.GetTransform().Position = {0.0f, 3.0f, -4.0f};
-            host.SetStatus("Трёхточечная схема света добавлена");
+            host.SetStatus(T("Трёхточечная схема света добавлена"));
         }
-        if (ImGui::Button("Camera + Ground", ImVec2(-1, 0))) {
+        if (ImGui::Button(T("Камера и пол"), ImVec2(-1, 0))) {
             host.PushUndo();
             const int cam = host.Create(CreateKind::Camera);
             const int ground = host.Create(CreateKind::Plane);
@@ -245,12 +246,12 @@ void AssetsPanel::Draw(DirectorHost& host) {
             Scene& scene = host.CurrentScene();
             if (GameObject o = scene.Get(ground); o.Valid()) o.GetTransform().Scale = {24.0f, 1.0f, 24.0f};
             host.SetActiveCameraId(cam);
-            host.SetStatus("Камера и пол добавлены");
+            host.SetStatus(T("Камера и пол добавлены"));
         }
-        if (ImGui::Button("Turntable (объект крутится 4 c)", ImVec2(-1, 0))) {
+        if (ImGui::Button(T("Turntable (объект крутится 4 c)"), ImVec2(-1, 0))) {
             const int id = host.SelectedId();
             if (id < 0) {
-                host.SetStatus("Сначала выберите объект");
+                host.SetStatus(T("Сначала выберите объект"));
             } else {
                 host.PushUndo();
                 // Оборот вокруг Y за 4 секунды — самый частый показ модели.
@@ -264,7 +265,7 @@ void AssetsPanel::Draw(DirectorHost& host) {
                     track.Channels[1].SetKey(0.0f, values[1], Interp::Linear);
                     track.Channels[1].SetKey(4.0f, values[1] + 360.0f, Interp::Linear);
                 }
-                host.SetStatus("Вращение на 4 секунды добавлено");
+                host.SetStatus(T("Вращение на 4 секунды добавлено"));
             }
         }
         ImGui::End();
@@ -274,7 +275,7 @@ void AssetsPanel::Draw(DirectorHost& host) {
     // --- Панель пути и поиск ---
     if (m_dirty || m_shownDir != host.AssetsDir()) Refresh(host.AssetsDir());
 
-    if (Icons::IconButton("up", Icon::Open, "На уровень вверх")) {
+    if (Icons::IconButton("up", Icon::Open, T("На уровень вверх"))) {
         if (host.AssetsDir().has_parent_path()) {
             host.AssetsDir() = host.AssetsDir().parent_path();
             m_dirty = true;
@@ -293,7 +294,7 @@ void AssetsPanel::Draw(DirectorHost& host) {
         const ImVec2 pos = ImGui::GetCursorScreenPos();
         ImGui::SetNextItemWidth(searchWidth);
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(24, 4));
-        ImGui::InputTextWithHint("##assetSearch", "Поиск...", &m_filter);
+        ImGui::InputTextWithHint("##assetSearch", T("Поиск..."), &m_filter);
         ImGui::PopStyleVar();
         Icons::Draw(ImGui::GetWindowDrawList(), Icon::Search,
                     ImVec2(pos.x + 13.0f, pos.y + ImGui::GetFrameHeight() * 0.5f),
@@ -302,8 +303,8 @@ void AssetsPanel::Draw(DirectorHost& host) {
         if (showTileSlider) {
             ImGui::SameLine();
             ImGui::SetNextItemWidth(100.0f);
-            ImGui::SliderFloat("##tile", &m_tileSize, 48.0f, 140.0f, "размер");
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Размер плиток");
+            ImGui::SliderFloat("##tile", &m_tileSize, 48.0f, 140.0f, T("размер"));
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", T("Размер плиток"));
         }
     }
 
@@ -339,7 +340,7 @@ void AssetsPanel::Draw(DirectorHost& host) {
         const float treeWidth = std::clamp(assetsAvail * 0.45f, 130.0f, 190.0f);
         ImGui::BeginChild("##assetTree", ImVec2(treeWidth, -ImGui::GetFrameHeightWithSpacing()), true);
         DrawTree(host, host.AssetsDir(), 0);
-        if (m_entries.empty()) ImGui::TextDisabled("Нет вложенных папок");
+        if (m_entries.empty()) ImGui::TextDisabled("%s", T("Нет вложенных папок"));
         ImGui::EndChild();
         ImGui::SameLine();
     }
@@ -351,9 +352,9 @@ void AssetsPanel::Draw(DirectorHost& host) {
     for (const Entry& e : m_entries) {
         if (m_filter.empty() || e.Name.find(m_filter) != std::string::npos) ++shown;
     }
-    ImGui::TextDisabled("%d элемент(ов)", shown);
+    ImGui::TextDisabled(T("%d элемент(ов)"), shown);
     ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - 80.0f);
-    if (ImGui::SmallButton("Обновить")) m_dirty = true;
+    if (ImGui::SmallButton(T("Обновить"))) m_dirty = true;
 
     ImGui::End();
 }

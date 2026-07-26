@@ -14,6 +14,7 @@
 #include "sage/core/Version.h"
 #include "ui/Icons.h"
 #include "ui/FileDialog.h"
+#include "ui/Localization.h"
 #include "ui/Theme.h"
 
 namespace fs = std::filesystem;
@@ -24,15 +25,15 @@ namespace {
 
 const char* TitleOf(Dialog dialog) {
     switch (dialog) {
-        case Dialog::NewProject:       return "Новый проект";
-        case Dialog::OpenProject:      return "Открыть проект";
-        case Dialog::SaveProjectAs:    return "Сохранить проект как";
-        case Dialog::ImportAsset:      return "Импорт";
-        case Dialog::ExportScene:      return "Экспорт сцены (.sage)";
-        case Dialog::RenderSettings:   return "Настройки рендера";
-        case Dialog::TimelineSettings: return "Настройки таймлайна";
-        case Dialog::About:            return "О программе Director 3D";
-        case Dialog::Shortcuts:        return "Горячие клавиши";
+        case Dialog::NewProject:       return T("Новый проект");
+        case Dialog::OpenProject:      return T("Открыть проект");
+        case Dialog::SaveProjectAs:    return T("Сохранить проект как");
+        case Dialog::ImportAsset:      return T("Импорт");
+        case Dialog::ExportScene:      return T("Экспорт сцены (.sage)");
+        case Dialog::RenderSettings:   return T("Настройки рендера");
+        case Dialog::TimelineSettings: return T("Настройки таймлайна");
+        case Dialog::About:            return T("О программе Director 3D");
+        case Dialog::Shortcuts:        return T("Горячие клавиши");
         default:                       return "";
     }
 }
@@ -63,7 +64,7 @@ void PathField(const char* label, char* buffer, size_t size, bool mustExist,
 
     if (browsable) {
         ImGui::SameLine();
-        if (ImGui::Button("Обзор…", ImVec2(browseWidth, 0.0f))) {
+        if (ImGui::Button(T("Обзор…"), ImVec2(browseWidth, 0.0f))) {
             // Стартовый каталог — тот, что уже введён: диалог должен
             // открываться там, где человек работает, а не в домашней папке.
             std::error_code ec;
@@ -79,30 +80,30 @@ void PathField(const char* label, char* buffer, size_t size, bool mustExist,
             }
         }
         if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Открыть системный диалог (%s)", filedialog::Backend().c_str());
+            ImGui::SetTooltip(T("Открыть системный диалог (%s)"), filedialog::Backend().c_str());
         }
     }
 
     const fs::path path(buffer);
     std::error_code ec;
     if (buffer[0] == '\0') {
-        ImGui::TextDisabled("Введите путь к файлу");
+        ImGui::TextDisabled("%s", T("Введите путь к файлу"));
         return;
     }
     if (fs::exists(path, ec)) {
         ImGui::PushStyleColor(ImGuiCol_Text, Theme::Colors::Good);
-        ImGui::Text("Файл найден");
+        ImGui::Text("%s", T("Файл найден"));
         ImGui::PopStyleColor();
     } else if (mustExist) {
         ImGui::PushStyleColor(ImGuiCol_Text, Theme::Colors::Record);
-        ImGui::Text("Файла нет по этому пути");
+        ImGui::Text("%s", T("Файла нет по этому пути"));
         ImGui::PopStyleColor();
     } else if (path.has_parent_path() && !fs::is_directory(path.parent_path(), ec)) {
         ImGui::PushStyleColor(ImGuiCol_Text, Theme::Colors::Record);
-        ImGui::Text("Каталога %s не существует", path.parent_path().string().c_str());
+        ImGui::Text(T("Каталога %s не существует"), path.parent_path().string().c_str());
         ImGui::PopStyleColor();
     } else {
-        ImGui::TextDisabled("Будет создан новый файл");
+        ImGui::TextDisabled("%s", T("Будет создан новый файл"));
     }
 }
 
@@ -166,36 +167,36 @@ void DialogsPanel::DrawNewProject(DirectorHost& host) {
 
     if (host.Dirty()) {
         ImGui::PushStyleColor(ImGuiCol_Text, Theme::Colors::Warning);
-        ImGui::TextWrapped("В текущем проекте есть несохранённые изменения — они будут потеряны.");
+        ImGui::TextWrapped("%s", T("В текущем проекте есть несохранённые изменения — они будут потеряны."));
         ImGui::PopStyleColor();
         ImGui::Spacing();
     }
 
-    ImGui::TextUnformatted("Название проекта");
+    ImGui::TextUnformatted(T("Название проекта"));
     ImGui::SetNextItemWidth(-1.0f);
     ImGui::InputText("##name", m_projectName, sizeof(m_projectName));
     ImGui::Spacing();
-    ImGui::TextDisabled("Новая сцена содержит камеру, свет и пол — можно сразу анимировать.");
+    ImGui::TextDisabled("%s", T("Новая сцена содержит камеру, свет и пол — можно сразу анимировать."));
     ImGui::Spacing();
     ImGui::Separator();
 
-    if (ImGui::Button("Создать", ImVec2(120.0f, 0.0f))) {
+    if (ImGui::Button(T("Создать"), ImVec2(120.0f, 0.0f))) {
         host.NewProject();
         host.Document().Name = m_projectName;
-        host.SetStatus("Новый проект создан");
+        host.SetStatus(T("Новый проект создан"));
         Close();
     }
     ImGui::SameLine();
-    if (ImGui::Button("Отмена", ImVec2(120.0f, 0.0f))) Close();
+    if (ImGui::Button(T("Отмена"), ImVec2(120.0f, 0.0f))) Close();
     ImGui::EndPopup();
 }
 
 void DialogsPanel::DrawOpenProject(DirectorHost& host) {
     if (!BeginModal(TitleOf(Dialog::OpenProject))) return;
 
-    PathField("Путь к файлу проекта (.d3dproj)", m_path, sizeof(m_path), /*mustExist=*/true,
-              BrowseSpec{"Открыть проект Director 3D",
-                         {{"Проекты Director 3D", "*.d3dproj"}}, false, ""});
+    PathField(T("Путь к файлу проекта (.d3dproj)"), m_path, sizeof(m_path), /*mustExist=*/true,
+              BrowseSpec{T("Открыть проект Director 3D"),
+                         {{T("Проекты Director 3D"), "*.d3dproj"}}, false, ""});
     if (!m_error.empty()) {
         ImGui::PushStyleColor(ImGuiCol_Text, Theme::Colors::Record);
         ImGui::TextWrapped("%s", m_error.c_str());
@@ -204,7 +205,7 @@ void DialogsPanel::DrawOpenProject(DirectorHost& host) {
 
     // Список проектов в текущем каталоге ассетов — чаще всего нужный файл там.
     ImGui::Spacing();
-    ImGui::TextDisabled("Проекты в %s:", host.AssetsDir().string().c_str());
+    ImGui::TextDisabled(T("Проекты в %s:"), host.AssetsDir().string().c_str());
     ImGui::BeginChild("##list", ImVec2(0.0f, 110.0f), true);
     std::error_code ec;
     bool anyFound = false;
@@ -217,32 +218,32 @@ void DialogsPanel::DrawOpenProject(DirectorHost& host) {
             }
         }
     }
-    if (!anyFound) ImGui::TextDisabled("Здесь нет файлов .d3dproj");
+    if (!anyFound) ImGui::TextDisabled("%s", T("Здесь нет файлов .d3dproj"));
     ImGui::EndChild();
 
     ImGui::Separator();
     ImGui::BeginDisabled(!PathExists(m_path));
-    if (ImGui::Button("Открыть", ImVec2(120.0f, 0.0f))) {
+    if (ImGui::Button(T("Открыть"), ImVec2(120.0f, 0.0f))) {
         std::string err;
         if (host.OpenProject(m_path, err)) {
-            host.SetStatus("Проект открыт");
+            host.SetStatus(T("Проект открыт"));
             Close();
         } else {
-            m_error = "Не удалось открыть: " + err;
+            m_error = T("Не удалось открыть: ") + err;
         }
     }
     ImGui::EndDisabled();
     ImGui::SameLine();
-    if (ImGui::Button("Отмена", ImVec2(120.0f, 0.0f))) Close();
+    if (ImGui::Button(T("Отмена"), ImVec2(120.0f, 0.0f))) Close();
     ImGui::EndPopup();
 }
 
 void DialogsPanel::DrawSaveProjectAs(DirectorHost& host) {
     if (!BeginModal(TitleOf(Dialog::SaveProjectAs))) return;
 
-    PathField("Куда сохранить (.d3dproj)", m_path, sizeof(m_path), /*mustExist=*/false,
-              BrowseSpec{"Сохранить проект как",
-                         {{"Проекты Director 3D", "*.d3dproj"}}, true, "project.d3dproj"});
+    PathField(T("Куда сохранить (.d3dproj)"), m_path, sizeof(m_path), /*mustExist=*/false,
+              BrowseSpec{T("Сохранить проект как"),
+                         {{T("Проекты Director 3D"), "*.d3dproj"}}, true, "project.d3dproj"});
     if (!m_error.empty()) {
         ImGui::PushStyleColor(ImGuiCol_Text, Theme::Colors::Record);
         ImGui::TextWrapped("%s", m_error.c_str());
@@ -250,41 +251,41 @@ void DialogsPanel::DrawSaveProjectAs(DirectorHost& host) {
     }
     if (PathExists(m_path)) {
         ImGui::PushStyleColor(ImGuiCol_Text, Theme::Colors::Warning);
-        ImGui::TextWrapped("Файл существует и будет перезаписан.");
+        ImGui::TextWrapped("%s", T("Файл существует и будет перезаписан."));
         ImGui::PopStyleColor();
     }
 
     ImGui::Separator();
     ImGui::BeginDisabled(m_path[0] == '\0');
-    if (ImGui::Button("Сохранить", ImVec2(120.0f, 0.0f))) {
+    if (ImGui::Button(T("Сохранить"), ImVec2(120.0f, 0.0f))) {
         // Расширение дописываем сами: пользователь набирает имя, а не формат.
         fs::path path(m_path);
         if (path.extension() != ProjectFile::kExtension) path += ProjectFile::kExtension;
         std::string err;
         if (host.SaveProject(path, err)) {
-            host.SetStatus("Проект сохранён");
+            host.SetStatus(T("Проект сохранён"));
             Close();
         } else {
-            m_error = "Не удалось сохранить: " + err;
+            m_error = T("Не удалось сохранить: ") + err;
         }
     }
     ImGui::EndDisabled();
     ImGui::SameLine();
-    if (ImGui::Button("Отмена", ImVec2(120.0f, 0.0f))) Close();
+    if (ImGui::Button(T("Отмена"), ImVec2(120.0f, 0.0f))) Close();
     ImGui::EndPopup();
 }
 
 void DialogsPanel::DrawImportAsset(DirectorHost& host) {
     if (!BeginModal(TitleOf(Dialog::ImportAsset))) return;
 
-    ImGui::TextWrapped("Модели .glb / .gltf импортируются как персонажи со скелетной анимацией, "
+    ImGui::TextWrapped("%s", T("Модели .glb / .gltf импортируются как персонажи со скелетной анимацией, "
                        ".obj — как статическая геометрия. Звуковые файлы становятся звуковой "
-                       "дорожкой ролика.");
+                       "дорожкой ролика."));
     ImGui::Spacing();
-    PathField("Путь к файлу", m_path, sizeof(m_path), /*mustExist=*/true,
-              BrowseSpec{"Импорт ассета",
-                         {{"Модели и звук", "*.glb *.gltf *.obj *.wav *.mp3 *.flac"},
-                          {"Все файлы", "*"}}, false, ""});
+    PathField(T("Путь к файлу"), m_path, sizeof(m_path), /*mustExist=*/true,
+              BrowseSpec{T("Импорт ассета"),
+                         {{T("Модели и звук"), "*.glb *.gltf *.obj *.wav *.mp3 *.flac"},
+                          {T("Все файлы"), "*"}}, false, ""});
     if (!m_error.empty()) {
         ImGui::PushStyleColor(ImGuiCol_Text, Theme::Colors::Record);
         ImGui::TextWrapped("%s", m_error.c_str());
@@ -293,39 +294,39 @@ void DialogsPanel::DrawImportAsset(DirectorHost& host) {
 
     ImGui::Separator();
     ImGui::BeginDisabled(!PathExists(m_path));
-    if (ImGui::Button("Импортировать", ImVec2(140.0f, 0.0f))) {
+    if (ImGui::Button(T("Импортировать"), ImVec2(140.0f, 0.0f))) {
         const fs::path path(m_path);
         const std::string ext = path.extension().string();
         if (ext == ".wav" || ext == ".ogg" || ext == ".mp3" || ext == ".flac") {
             host.PushUndo();
             if (host.Document().Audio.Load(path.string())) {
-                host.SetStatus("Звуковая дорожка загружена");
+                host.SetStatus(T("Звуковая дорожка загружена"));
                 Close();
             } else {
-                m_error = "Не удалось прочитать звуковой файл";
+                m_error = T("Не удалось прочитать звуковой файл");
             }
         } else if (host.ImportAsset(path) >= 0) {
-            host.SetStatus("Импортировано: " + path.filename().string());
+            host.SetStatus(T("Импортировано: ") + path.filename().string());
             Close();
         } else {
-            m_error = "Не удалось импортировать — формат не поддерживается или файл повреждён";
+            m_error = T("Не удалось импортировать — формат не поддерживается или файл повреждён");
         }
     }
     ImGui::EndDisabled();
     ImGui::SameLine();
-    if (ImGui::Button("Отмена", ImVec2(120.0f, 0.0f))) Close();
+    if (ImGui::Button(T("Отмена"), ImVec2(120.0f, 0.0f))) Close();
     ImGui::EndPopup();
 }
 
 void DialogsPanel::DrawExportScene(DirectorHost& host) {
     if (!BeginModal(TitleOf(Dialog::ExportScene))) return;
 
-    ImGui::TextWrapped("Сохраняет ТОЛЬКО сцену в формате движка (.sage) — без анимации. "
-                       "Такой файл открывается редактором SAGE и грузится в игру.");
+    ImGui::TextWrapped("%s", T("Сохраняет ТОЛЬКО сцену в формате движка (.sage) — без анимации. "
+                       "Такой файл открывается редактором SAGE и грузится в игру."));
     ImGui::Spacing();
-    PathField("Куда сохранить (.sage)", m_path, sizeof(m_path), /*mustExist=*/false,
-              BrowseSpec{"Экспорт сцены в формат движка",
-                         {{"Сцены SAGE", "*.sage"}}, true, "scene.sage"});
+    PathField(T("Куда сохранить (.sage)"), m_path, sizeof(m_path), /*mustExist=*/false,
+              BrowseSpec{T("Экспорт сцены в формат движка"),
+                         {{T("Сцены SAGE"), "*.sage"}}, true, "scene.sage"});
     if (!m_error.empty()) {
         ImGui::PushStyleColor(ImGuiCol_Text, Theme::Colors::Record);
         ImGui::TextWrapped("%s", m_error.c_str());
@@ -334,20 +335,20 @@ void DialogsPanel::DrawExportScene(DirectorHost& host) {
 
     ImGui::Separator();
     ImGui::BeginDisabled(m_path[0] == '\0');
-    if (ImGui::Button("Экспортировать", ImVec2(140.0f, 0.0f))) {
+    if (ImGui::Button(T("Экспортировать"), ImVec2(140.0f, 0.0f))) {
         fs::path path(m_path);
         if (path.extension() != ".sage") path += ".sage";
         std::string err;
         if (host.ExportSceneToEngine(path, err)) {
-            host.SetStatus("Сцена экспортирована");
+            host.SetStatus(T("Сцена экспортирована"));
             Close();
         } else {
-            m_error = "Не удалось экспортировать: " + err;
+            m_error = T("Не удалось экспортировать: ") + err;
         }
     }
     ImGui::EndDisabled();
     ImGui::SameLine();
-    if (ImGui::Button("Отмена", ImVec2(120.0f, 0.0f))) Close();
+    if (ImGui::Button(T("Отмена"), ImVec2(120.0f, 0.0f))) Close();
     ImGui::EndPopup();
 }
 
@@ -361,14 +362,14 @@ void DialogsPanel::DrawRenderSettings(DirectorHost& host) {
     // Он первый, потому что от него зависит смысл остальных полей: у MP4 «имя
     // файлов» — это имя одного ролика, у секвенции — префикс сотен PNG.
     const bool ffmpeg = VideoWriter::FfmpegAvailable();
-    ImGui::TextUnformatted("Формат вывода");
+    ImGui::TextUnformatted(T("Формат вывода"));
     bool mp4 = settings.OutputFormat == SequenceExporter::Format::Mp4;
-    if (ImGui::RadioButton("Видео MP4 (H.264)", mp4)) {
+    if (ImGui::RadioButton(T("Видео MP4 (H.264)"), mp4)) {
         settings.OutputFormat = SequenceExporter::Format::Mp4;
         mp4 = true;
     }
     ImGui::SameLine(0.0f, 18.0f);
-    if (ImGui::RadioButton("Секвенция PNG", !mp4)) {
+    if (ImGui::RadioButton(T("Секвенция PNG"), !mp4)) {
         settings.OutputFormat = SequenceExporter::Format::PngSequence;
         mp4 = false;
     }
@@ -378,21 +379,21 @@ void DialogsPanel::DrawRenderSettings(DirectorHost& host) {
         // что с этим делать. Иначе пользователь упрётся в ошибку уже после
         // нажатия «Рендерить».
         ImGui::PushStyleColor(ImGuiCol_Text, Theme::Colors::Record);
-        ImGui::TextWrapped("ffmpeg не найден — MP4 записать нечем.");
+        ImGui::TextWrapped("%s", T("ffmpeg не найден — MP4 записать нечем."));
         ImGui::PopStyleColor();
         ImGui::TextDisabled("Ubuntu/Debian: sudo apt install ffmpeg · macOS: brew install ffmpeg · "
                             "Windows: winget install ffmpeg");
-        ImGui::TextDisabled("Либо выберите секвенцию PNG — она работает без ffmpeg.");
+        ImGui::TextDisabled("%s", T("Либо выберите секвенцию PNG — она работает без ffmpeg."));
     } else if (mp4) {
         ImGui::PushStyleColor(ImGuiCol_Text, Theme::Colors::Good);
         ImGui::TextWrapped("%s", VideoWriter::FfmpegVersion().c_str());
         ImGui::PopStyleColor();
     } else {
-        ImGui::TextDisabled("Кадр = отдельный файл PNG без потерь: принимается любым монтажом.");
+        ImGui::TextDisabled("%s", T("Кадр = отдельный файл PNG без потерь: принимается любым монтажом."));
     }
 
     ImGui::Spacing();
-    ImGui::TextUnformatted("Разрешение кадра");
+    ImGui::TextUnformatted(T("Разрешение кадра"));
     ImGui::SetNextItemWidth(120.0f);
     ImGui::DragInt("##w", &settings.Width, 1.0f, 16, 7680, "%d px");
     ImGui::SameLine();
@@ -413,10 +414,10 @@ void DialogsPanel::DrawRenderSettings(DirectorHost& host) {
     const bool oddSize = (settings.Width % 2 != 0) || (settings.Height % 2 != 0);
     if (mp4 && oddSize) {
         ImGui::PushStyleColor(ImGuiCol_Text, Theme::Colors::Warning);
-        ImGui::TextWrapped("H.264 требует чётных сторон кадра.");
+        ImGui::TextWrapped("%s", T("H.264 требует чётных сторон кадра."));
         ImGui::PopStyleColor();
         ImGui::SameLine();
-        if (ImGui::SmallButton("Исправить")) {
+        if (ImGui::SmallButton(T("Исправить"))) {
             settings.Width &= ~1;
             settings.Height &= ~1;
         }
@@ -428,44 +429,44 @@ void DialogsPanel::DrawRenderSettings(DirectorHost& host) {
         // CRF: меньше — лучше картинка и больше файл. Диапазон сознательно
         // сужен до вменяемого: ниже 14 растёт только размер, выше 28 — заметные
         // артефакты на градиентах неба и в размытии.
-        ImGui::SliderInt("Качество (CRF)", &settings.Quality, 14, 28);
-        const char* hint = settings.Quality <= 17   ? "почти без потерь, файл крупный"
-                           : settings.Quality <= 20 ? "мастер-качество для монтажа"
-                           : settings.Quality <= 23 ? "обычное качество для показа"
-                                                    : "лёгкий файл, видны артефакты";
+        ImGui::SliderInt(T("Качество (CRF)"), &settings.Quality, 14, 28);
+        const char* hint = settings.Quality <= 17   ? T("почти без потерь, файл крупный")
+                           : settings.Quality <= 20 ? T("мастер-качество для монтажа")
+                           : settings.Quality <= 23 ? T("обычное качество для показа")
+                                                    : T("лёгкий файл, видны артефакты");
         ImGui::SameLine();
         ImGui::TextDisabled("— %s", hint);
 
         const bool hasAudio = doc.Audio.Loaded();
         ImGui::BeginDisabled(!hasAudio);
         bool includeAudio = settings.IncludeAudio && hasAudio;
-        if (ImGui::Checkbox("Вшить звуковую дорожку", &includeAudio)) settings.IncludeAudio = includeAudio;
+        if (ImGui::Checkbox(T("Вшить звуковую дорожку"), &includeAudio)) settings.IncludeAudio = includeAudio;
         ImGui::EndDisabled();
         if (!hasAudio) {
             ImGui::SameLine();
-            ImGui::TextDisabled("(звук в проект не загружен)");
+            ImGui::TextDisabled("%s", T("(звук в проект не загружен)"));
         } else if (doc.Audio.Muted) {
             ImGui::SameLine();
-            ImGui::TextDisabled("(дорожка заглушена — в ролик не попадёт)");
+            ImGui::TextDisabled("%s", T("(дорожка заглушена — в ролик не попадёт)"));
         }
     }
 
     ImGui::Spacing();
-    ImGui::TextUnformatted("Диапазон");
+    ImGui::TextUnformatted(T("Диапазон"));
     ImGui::SetNextItemWidth(150.0f);
-    ImGui::DragFloat("Начало", &settings.StartTime, 0.05f, 0.0f, doc.Duration, "%.2f c");
+    ImGui::DragFloat(T("Начало"), &settings.StartTime, 0.05f, 0.0f, doc.Duration, T("%.2f c"));
     ImGui::SetNextItemWidth(150.0f);
-    ImGui::DragFloat("Конец", &settings.EndTime, 0.05f, 0.0f, doc.Duration, "%.2f c");
-    ImGui::TextDisabled("Конец = 0 означает «до конца ролика» (%.2f c)", (double)doc.Duration);
+    ImGui::DragFloat(T("Конец"), &settings.EndTime, 0.05f, 0.0f, doc.Duration, T("%.2f c"));
+    ImGui::TextDisabled(T("Конец = 0 означает «до конца ролика» (%.2f c)"), (double)doc.Duration);
 
     ImGui::Spacing();
     std::snprintf(m_renderDir, sizeof(m_renderDir), "%s", settings.OutputDir.c_str());
-    ImGui::TextUnformatted("Каталог вывода");
+    ImGui::TextUnformatted(T("Каталог вывода"));
     ImGui::SetNextItemWidth(-1.0f);
     if (ImGui::InputText("##outdir", m_renderDir, sizeof(m_renderDir))) settings.OutputDir = m_renderDir;
 
     std::snprintf(m_renderName, sizeof(m_renderName), "%s", settings.BaseName.c_str());
-    ImGui::TextUnformatted(mp4 ? "Имя ролика" : "Имя файлов");
+    ImGui::TextUnformatted(mp4 ? T("Имя ролика") : T("Имя файлов"));
     ImGui::SetNextItemWidth(-1.0f);
     if (ImGui::InputText("##outname", m_renderName, sizeof(m_renderName))) settings.BaseName = m_renderName;
 
@@ -474,34 +475,34 @@ void DialogsPanel::DrawRenderSettings(DirectorHost& host) {
     // Сглаживание накоплением. Осмысленные значения — степени двойки; ползунок
     // по «числу выборок» честнее выпадающего списка «низкое/среднее/высокое»:
     // здесь прямо видно, во сколько раз вырастет время рендера.
-    ImGui::SliderInt("Сглаживание", &settings.Samples, 1, 16, settings.Samples > 1 ? "%d выборок" : "выкл");
+    ImGui::SliderInt(T("Сглаживание"), &settings.Samples, 1, 16, settings.Samples > 1 ? T("%d выборок") : T("выкл"));
     if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Кадр снимается несколько раз с микросдвигом и усредняется.\n"
+        ImGui::SetTooltip("%s", T("Кадр снимается несколько раз с микросдвигом и усредняется.\n"
                           "Убирает лесенку и мерцание тонких деталей — в отличие от\n"
                           "экранного сглаживания во вьюпорте. Время рендера растёт\n"
-                          "во столько же раз.");
+                          "во столько же раз."));
     }
     if (settings.Samples > 1) {
-        ImGui::TextDisabled("Рендер будет примерно в %d раз(а) дольше", settings.Samples);
+        ImGui::TextDisabled(T("Рендер будет примерно в %d раз(а) дольше"), settings.Samples);
     }
 
     ImGui::Spacing();
     ImGui::SetNextItemWidth(150.0f);
-    ImGui::DragInt("Кадров за шаг", &settings.FramesPerStep, 0.2f, 1, 30);
+    ImGui::DragInt(T("Кадров за шаг"), &settings.FramesPerStep, 0.2f, 1, 30);
     if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Больше — быстрее экспорт, но интерфейс отзывается реже.");
+        ImGui::SetTooltip("%s", T("Больше — быстрее экспорт, но интерфейс отзывается реже."));
     }
 
     ImGui::Spacing();
     const float end = settings.EndTime > settings.StartTime ? settings.EndTime : doc.Duration;
     const int frames = (int)((end - settings.StartTime) * doc.Fps) + 1;
     if (mp4) {
-        ImGui::TextDisabled("Будет записано примерно %d кадр(ов) (%.1f c) в %s/%s.mp4",
+        ImGui::TextDisabled(T("Будет записано примерно %d кадр(ов) (%.1f c) в %s/%s.mp4"),
                             frames > 0 ? frames : 0,
                             (double)(frames > 0 ? frames : 0) / (double)(doc.Fps > 0.0f ? doc.Fps : 24.0f),
                             settings.OutputDir.c_str(), settings.BaseName.c_str());
     } else {
-        ImGui::TextDisabled("Будет записано примерно %d кадр(ов) в %s_00000.png …",
+        ImGui::TextDisabled(T("Будет записано примерно %d кадр(ов) в %s_00000.png …"),
                             frames > 0 ? frames : 0, settings.BaseName.c_str());
     }
 
@@ -512,10 +513,10 @@ void DialogsPanel::DrawRenderSettings(DirectorHost& host) {
     ImGui::Spacing();
     RenderQueue& queue = host.Queue();
     char queueLabel[64];
-    std::snprintf(queueLabel, sizeof(queueLabel), "Очередь (%d)", (int)queue.Jobs.size());
+    std::snprintf(queueLabel, sizeof(queueLabel), T("Очередь (%d)"), (int)queue.Jobs.size());
     if (ImGui::CollapsingHeader(queueLabel)) {
         if (queue.Jobs.empty()) {
-            ImGui::TextDisabled("Заданий нет. Настройте параметры выше и нажмите «В очередь».");
+            ImGui::TextDisabled("%s", T("Заданий нет. Настройте параметры выше и нажмите «В очередь»."));
         }
         for (size_t i = 0; i < queue.Jobs.size(); ++i) {
             RenderQueueJob& job = queue.Jobs[i];
@@ -526,10 +527,10 @@ void DialogsPanel::DrawRenderSettings(DirectorHost& host) {
             if (current) ImGui::PopStyleColor();
             ImGui::SameLine(300.0f);
             if (job.Done) ImGui::TextDisabled("%s", job.Result.c_str());
-            else if (current) ImGui::TextDisabled("идёт…");
-            else ImGui::TextDisabled("ждёт");
+            else if (current) ImGui::TextDisabled("%s", T("идёт…"));
+            else ImGui::TextDisabled("%s", T("ждёт"));
             ImGui::SameLine(430.0f);
-            if (ImGui::SmallButton("Убрать")) {
+            if (ImGui::SmallButton(T("Убрать"))) {
                 queue.Jobs.erase(queue.Jobs.begin() + (long)i);
                 ImGui::PopID();
                 break;
@@ -538,35 +539,35 @@ void DialogsPanel::DrawRenderSettings(DirectorHost& host) {
         }
 
         ImGui::Spacing();
-        if (ImGui::Button("В очередь", ImVec2(120.0f, 0.0f))) {
+        if (ImGui::Button(T("В очередь"), ImVec2(120.0f, 0.0f))) {
             RenderQueueJob job;
             job.Settings = settings;
             // Имя собирается из того, что отличает задания друг от друга:
             // диапазон и разрешение. «Задание 1/2/3» ничего бы не сказало.
             char name[160];
-            std::snprintf(name, sizeof(name), "%s · %dx%d · %.1f–%.1f c",
+            std::snprintf(name, sizeof(name), T("%s · %dx%d · %.1f–%.1f c"),
                           settings.BaseName.c_str(), settings.Width, settings.Height,
                           (double)settings.StartTime,
                           (double)(settings.EndTime > settings.StartTime ? settings.EndTime
                                                                          : doc.Duration));
             job.Name = name;
             queue.Jobs.push_back(std::move(job));
-            host.SetStatus("Добавлено в очередь: " + std::to_string(queue.Jobs.size()));
+            host.SetStatus(T("Добавлено в очередь: ") + std::to_string(queue.Jobs.size()));
         }
         if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Запомнить ТЕКУЩИЕ настройки как задание.\n"
-                              "Меняйте диапазон и разрешение и добавляйте ещё.");
+            ImGui::SetTooltip("%s", T("Запомнить ТЕКУЩИЕ настройки как задание.\n"
+                              "Меняйте диапазон и разрешение и добавляйте ещё."));
         }
         ImGui::SameLine();
         ImGui::BeginDisabled(queue.Jobs.empty());
-        if (ImGui::Button("Запустить очередь", ImVec2(160.0f, 0.0f))) {
+        if (ImGui::Button(T("Запустить очередь"), ImVec2(160.0f, 0.0f))) {
             host.StartQueue();
             Close();
         }
         ImGui::EndDisabled();
         ImGui::SameLine();
         ImGui::BeginDisabled(queue.Jobs.empty());
-        if (ImGui::Button("Очистить", ImVec2(100.0f, 0.0f))) queue.Jobs.clear();
+        if (ImGui::Button(T("Очистить"), ImVec2(100.0f, 0.0f))) queue.Jobs.clear();
         ImGui::EndDisabled();
     }
 
@@ -574,13 +575,13 @@ void DialogsPanel::DrawRenderSettings(DirectorHost& host) {
     // Рендер в MP4 без кодировщика заведомо провалится — кнопку гасим, причина
     // уже написана выше.
     ImGui::BeginDisabled(mp4 && !ffmpeg);
-    if (ImGui::Button("Рендерить", ImVec2(140.0f, 0.0f))) {
+    if (ImGui::Button(T("Рендерить"), ImVec2(140.0f, 0.0f))) {
         host.StartRender();
         Close();
     }
     ImGui::EndDisabled();
     ImGui::SameLine();
-    if (ImGui::Button("Закрыть", ImVec2(120.0f, 0.0f))) Close();
+    if (ImGui::Button(T("Закрыть"), ImVec2(120.0f, 0.0f))) Close();
     ImGui::EndPopup();
 }
 
@@ -590,21 +591,21 @@ void DialogsPanel::DrawTimelineSettings(DirectorHost& host) {
     AnimationDocument& doc = host.Document();
 
     ImGui::SetNextItemWidth(160.0f);
-    if (ImGui::DragFloat("Длительность", &doc.Duration, 0.1f, 0.1f, 36000.0f, "%.2f c")) host.PushUndo();
+    if (ImGui::DragFloat(T("Длительность"), &doc.Duration, 0.1f, 0.1f, 36000.0f, T("%.2f c"))) host.PushUndo();
     ImGui::SetNextItemWidth(160.0f);
-    if (ImGui::DragFloat("Кадров в секунду", &doc.Fps, 0.5f, 1.0f, 240.0f, "%.0f")) host.PushUndo();
-    ImGui::TextDisabled("Смена частоты не двигает ключи: время хранится в секундах.");
+    if (ImGui::DragFloat(T("Кадров в секунду"), &doc.Fps, 0.5f, 1.0f, 240.0f, "%.0f")) host.PushUndo();
+    ImGui::TextDisabled("%s", T("Смена частоты не двигает ключи: время хранится в секундах."));
 
     ImGui::Spacing();
-    ImGui::Checkbox("Зациклить проигрывание", &host.Transport().Loop);
+    ImGui::Checkbox(T("Зациклить проигрывание"), &host.Transport().Loop);
     ImGui::SetNextItemWidth(160.0f);
-    ImGui::DragFloat("Скорость", &host.Transport().Speed, 0.01f, -4.0f, 4.0f, "%.2fx");
-    ImGui::TextDisabled("Отрицательная скорость проигрывает ролик назад.");
+    ImGui::DragFloat(T("Скорость"), &host.Transport().Speed, 0.01f, -4.0f, 4.0f, "%.2fx");
+    ImGui::TextDisabled("%s", T("Отрицательная скорость проигрывает ролик назад."));
 
     ImGui::Spacing();
-    ImGui::SeparatorText("Метки");
+    ImGui::SeparatorText(T("Метки"));
     if (doc.Markers.empty()) {
-        ImGui::TextDisabled("Меток нет. Animation > Add Marker ставит метку на текущем кадре.");
+        ImGui::TextDisabled("%s", T("Меток нет. Animation > Add Marker ставит метку на текущем кадре."));
     } else {
         for (size_t i = 0; i < doc.Markers.size(); ++i) {
             ImGui::PushID((int)i);
@@ -614,9 +615,9 @@ void DialogsPanel::DrawTimelineSettings(DirectorHost& host) {
             ImGui::InputText("##mname", &doc.Markers[i].Name);
             ImGui::SameLine();
             ImGui::SetNextItemWidth(110.0f);
-            ImGui::DragFloat("##mtime", &doc.Markers[i].Time, 0.01f, 0.0f, doc.Duration, "%.2f c");
+            ImGui::DragFloat("##mtime", &doc.Markers[i].Time, 0.01f, 0.0f, doc.Duration, T("%.2f c"));
             ImGui::SameLine();
-            if (ImGui::SmallButton("Удалить")) {
+            if (ImGui::SmallButton(T("Удалить"))) {
                 host.PushUndo();
                 doc.Markers.erase(doc.Markers.begin() + (long)i);
                 ImGui::PopID();
@@ -627,7 +628,7 @@ void DialogsPanel::DrawTimelineSettings(DirectorHost& host) {
     }
 
     ImGui::Separator();
-    if (ImGui::Button("Закрыть", ImVec2(120.0f, 0.0f))) Close();
+    if (ImGui::Button(T("Закрыть"), ImVec2(120.0f, 0.0f))) Close();
     ImGui::EndPopup();
 }
 
@@ -639,22 +640,22 @@ void DialogsPanel::DrawAbout(DirectorHost& host) {
     ImGui::TextUnformatted("Director 3D");
     if (Theme::MonoFont()) ImGui::PopFont();
 
-    ImGui::TextDisabled("Версия 0.1.0 — инструмент 3D-анимации");
+    ImGui::TextDisabled("%s", T("Версия 0.1.0 — инструмент 3D-анимации"));
     ImGui::Spacing();
-    ImGui::TextWrapped("Собран на движке SAGE Engine %s. Сцена, рендер, скелетная анимация, "
+    ImGui::TextWrapped(T("Собран на движке SAGE Engine %s. Сцена, рендер, скелетная анимация, "
                        "ресурсы и звук — движковые; Director 3D добавляет поверх них таймлайн, "
-                       "кривые, транспорт и экспорт секвенции.", kSageEngineVersion);
+                       "кривые, транспорт и экспорт секвенции."), kSageEngineVersion);
     ImGui::Spacing();
-    ImGui::SeparatorText("Форматы");
-    ImGui::BulletText(".d3dproj — проект (сцена + анимация)");
-    ImGui::BulletText(".sage — сцена движка (экспорт и импорт)");
-    ImGui::BulletText(".glb / .gltf / .obj — модели");
-    ImGui::BulletText("PNG-секвенция — результат рендера");
+    ImGui::SeparatorText(T("Форматы"));
+    ImGui::BulletText("%s", T(".d3dproj — проект (сцена + анимация)"));
+    ImGui::BulletText("%s", T(".sage — сцена движка (экспорт и импорт)"));
+    ImGui::BulletText("%s", T(".glb / .gltf / .obj — модели"));
+    ImGui::BulletText("%s", T("PNG-секвенция — результат рендера"));
     ImGui::Spacing();
-    ImGui::TextDisabled("Интерфейс: Dear ImGui. Манипулятор: ImGuizmo.");
+    ImGui::TextDisabled("%s", T("Интерфейс: Dear ImGui. Манипулятор: ImGuizmo."));
 
     ImGui::Separator();
-    if (ImGui::Button("Закрыть", ImVec2(120.0f, 0.0f))) Close();
+    if (ImGui::Button(T("Закрыть"), ImVec2(120.0f, 0.0f))) Close();
     ImGui::EndPopup();
 }
 
@@ -676,53 +677,53 @@ void DialogsPanel::DrawShortcuts(DirectorHost& host) {
 
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
-        ImGui::SeparatorText("Файл");
+        ImGui::SeparatorText(T("Файл"));
         ImGui::TableNextColumn();
-        row("Ctrl+N / Ctrl+O / Ctrl+S", "Новый / открыть / сохранить");
-        row("Ctrl+Z / Ctrl+Y", "Отменить / повторить");
-        row("Ctrl+D / Del", "Дублировать / удалить объект");
+        row("Ctrl+N / Ctrl+O / Ctrl+S", T("Новый / открыть / сохранить"));
+        row("Ctrl+Z / Ctrl+Y", T("Отменить / повторить"));
+        row("Ctrl+D / Del", T("Дублировать / удалить объект"));
 
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
-        ImGui::SeparatorText("Вьюпорт");
+        ImGui::SeparatorText(T("Вьюпорт"));
         ImGui::TableNextColumn();
-        row("ПКМ + WASD / QE", "Осмотр и полёт камерой");
-        row("СКМ", "Панорама");
-        row("Колесо", "Приблизить / отдалить");
-        row("Q / W / E / R", "Выбор / перемещение / поворот / масштаб");
-        row("F", "Навести камеру на выбранное");
-        row("G", "Показать или скрыть сетку");
+        row(T("ПКМ + WASD / QE"), T("Осмотр и полёт камерой"));
+        row(T("СКМ"), T("Панорама"));
+        row(T("Колесо"), T("Приблизить / отдалить"));
+        row("Q / W / E / R", T("Выбор / перемещение / поворот / масштаб"));
+        row("F", T("Навести камеру на выбранное"));
+        row("G", T("Показать или скрыть сетку"));
 
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
-        ImGui::SeparatorText("Анимация");
+        ImGui::SeparatorText(T("Анимация"));
         ImGui::TableNextColumn();
-        row("Пробел", "Проигрывание / пауза");
-        row("Shift+Пробел", "Стоп и в начало");
-        row("← / →", "Кадр назад / вперёд");
-        row("Home / End", "В начало / в конец ролика");
-        row(", / .", "Предыдущий / следующий ключ");
-        row("K", "Поставить ключ выбранному");
-        row("Ctrl+K", "Включить авто-ключ");
-        row("L", "Зациклить проигрывание");
-        row("M", "Поставить метку");
-        row("F12", "Отрендерить секвенцию");
+        row(T("Пробел"), T("Проигрывание / пауза"));
+        row(T("Shift+Пробел"), T("Стоп и в начало"));
+        row("← / →", T("Кадр назад / вперёд"));
+        row("Home / End", T("В начало / в конец ролика"));
+        row(", / .", T("Предыдущий / следующий ключ"));
+        row("K", T("Поставить ключ выбранному"));
+        row("Ctrl+K", T("Включить авто-ключ"));
+        row("L", T("Зациклить проигрывание"));
+        row("M", T("Поставить метку"));
+        row("F12", T("Отрендерить секвенцию"));
 
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
-        ImGui::SeparatorText("Таймлайн");
+        ImGui::SeparatorText(T("Таймлайн"));
         ImGui::TableNextColumn();
-        row("Колесо", "Зум вокруг курсора");
-        row("Shift+Колесо / СКМ", "Прокрутка по времени");
-        row("Ctrl+клик", "Добавить ключ к выделению");
-        row("Alt при перетаскивании", "Без прилипания к кадрам");
-        row("Del", "Удалить выбранные ключи");
+        row(T("Колесо"), T("Зум вокруг курсора"));
+        row(T("Shift+Колесо / СКМ"), T("Прокрутка по времени"));
+        row(T("Ctrl+клик"), T("Добавить ключ к выделению"));
+        row(T("Alt при перетаскивании"), T("Без прилипания к кадрам"));
+        row("Del", T("Удалить выбранные ключи"));
 
         ImGui::EndTable();
     }
 
     ImGui::Separator();
-    if (ImGui::Button("Закрыть", ImVec2(120.0f, 0.0f))) Close();
+    if (ImGui::Button(T("Закрыть"), ImVec2(120.0f, 0.0f))) Close();
     ImGui::EndPopup();
 }
 

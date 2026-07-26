@@ -16,6 +16,7 @@
 #include "sage/scene/Components.h"
 #include "ui/DirectorHost.h"
 #include "ui/Icons.h"
+#include "ui/Localization.h"
 #include "ui/Theme.h"
 
 namespace d3d {
@@ -83,7 +84,7 @@ std::string MorphName(Scene& scene, int entityId, int index) {
 
 std::string TargetName(Scene& scene, int id) {
     GameObject obj = scene.Get(id);
-    return obj.Valid() ? obj.Name() : std::string("<удалён>");
+    return obj.Valid() ? obj.Name() : std::string(T("<удалён>"));
 }
 
 } // namespace
@@ -135,11 +136,11 @@ void TimelinePanel::DrawTransport(DirectorHost& host) {
                          ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll)) {
         float parsed = 0.0f;
         if (Playback::ParseTimecode(timecode, doc.Fps, parsed)) host.SetCurrentTime(parsed);
-        else host.SetStatus("Не разобрал таймкод — ожидается ЧЧ:ММ:СС:КК или номер кадра");
+        else host.SetStatus(T("Не разобрал таймкод — ожидается ЧЧ:ММ:СС:КК или номер кадра"));
     }
     ImGui::PopStyleColor();
     if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Таймкод ЧЧ:ММ:СС:КК — можно ввести вручную\nКадр: %d",
+        ImGui::SetTooltip(T("Таймкод ЧЧ:ММ:СС:КК — можно ввести вручную\nКадр: %d"),
                           transport.FrameAt(doc.Fps));
     }
 
@@ -165,7 +166,7 @@ void TimelinePanel::DrawTransport(DirectorHost& host) {
         ImGui::EndCombo();
     }
     if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Частота кадров ролика.\nКлючи не сдвигаются: время хранится в секундах.");
+        ImGui::SetTooltip("%s", T("Частота кадров ролика.\nКлючи не сдвигаются: время хранится в секундах."));
     }
 
     // --- По центру: перемотка и проигрывание ---
@@ -175,40 +176,40 @@ void TimelinePanel::DrawTransport(DirectorHost& host) {
                                 rowX + (rowWidth - kCenterWidth) * 0.5f);
     ImGui::SameLine(centerX);
 
-    if (Icons::IconButton("first", Icon::SkipStart, "В начало (Home)", false, true, 26.0f)) {
+    if (Icons::IconButton("first", Icon::SkipStart, T("В начало (Home)"), false, true, 26.0f)) {
         host.SetCurrentTime(0.0f);
     }
     ImGui::SameLine();
-    if (Icons::IconButton("prevKey", Icon::PrevKey, "Предыдущий ключ (,)", false, true, 26.0f)) {
+    if (Icons::IconButton("prevKey", Icon::PrevKey, T("Предыдущий ключ (,)"), false, true, 26.0f)) {
         float t = 0.0f;
         if (doc.PrevKeyTime(host.CurrentTime(), t)) host.SetCurrentTime(t);
         else host.SetCurrentTime(0.0f);
     }
     ImGui::SameLine();
-    if (Icons::IconButton("stepBack", Icon::StepBack, "Кадр назад (←)", false, true, 26.0f)) {
+    if (Icons::IconButton("stepBack", Icon::StepBack, T("Кадр назад (←)"), false, true, 26.0f)) {
         host.StepFrames(-1);
     }
     ImGui::SameLine();
     if (Icons::IconButton("play", transport.Playing() ? Icon::Pause : Icon::Play,
-                          "Проигрывание (Пробел)", transport.Playing(), true, 30.0f)) {
+                          T("Проигрывание (Пробел)"), transport.Playing(), true, 30.0f)) {
         transport.TogglePlay();
     }
     ImGui::SameLine();
-    if (Icons::IconButton("stepFwd", Icon::StepForward, "Кадр вперёд (→)", false, true, 26.0f)) {
+    if (Icons::IconButton("stepFwd", Icon::StepForward, T("Кадр вперёд (→)"), false, true, 26.0f)) {
         host.StepFrames(1);
     }
     ImGui::SameLine();
-    if (Icons::IconButton("nextKey", Icon::NextKey, "Следующий ключ (.)", false, true, 26.0f)) {
+    if (Icons::IconButton("nextKey", Icon::NextKey, T("Следующий ключ (.)"), false, true, 26.0f)) {
         float t = 0.0f;
         if (doc.NextKeyTime(host.CurrentTime(), t)) host.SetCurrentTime(t);
         else host.SetCurrentTime(doc.Duration);
     }
     ImGui::SameLine();
-    if (Icons::IconButton("last", Icon::SkipEnd, "В конец (End)", false, true, 26.0f)) {
+    if (Icons::IconButton("last", Icon::SkipEnd, T("В конец (End)"), false, true, 26.0f)) {
         host.SetCurrentTime(doc.Duration);
     }
     ImGui::SameLine(0.0f, 10.0f);
-    if (Icons::IconButton("loop", Icon::Loop, "Зациклить проигрывание (L)", transport.Loop, true,
+    if (Icons::IconButton("loop", Icon::Loop, T("Зациклить проигрывание (L)"), transport.Loop, true,
                           26.0f)) {
         transport.Loop = !transport.Loop;
     }
@@ -216,7 +217,7 @@ void TimelinePanel::DrawTransport(DirectorHost& host) {
     // --- Справа: показать весь ролик ---
     if (rowWidth > kLeftWidth + kCenterWidth + kRightWidth + 24.0f) {
         ImGui::SameLine(rowX + rowWidth - kRightWidth);
-        if (Icons::IconButton("zoomAll", Icon::Search, "Показать весь ролик", false, true, 26.0f)) {
+        if (Icons::IconButton("zoomAll", Icon::Search, T("Показать весь ролик"), false, true, 26.0f)) {
             m_viewStart = 0.0f;
             m_viewEnd = doc.Duration;
         }
@@ -377,7 +378,7 @@ void TimelinePanel::DeleteSelectedKeys(DirectorHost& host) {
         const int index = curve.KeyIndexAt(ref.Time);
         if (index >= 0) curve.RemoveKey(index);
     }
-    host.SetStatus("Удалено ключей: " + std::to_string(m_selectedKeys.size()));
+    host.SetStatus(T("Удалено ключей: ") + std::to_string(m_selectedKeys.size()));
     m_selectedKeys.clear();
 }
 
@@ -396,7 +397,7 @@ void TimelinePanel::SetSelectedKeysInterp(DirectorHost& host, Interp mode) {
         if (mode == Interp::Bezier) curve.ConvertToBezier(index);
         else curve.AtMutable(index).Mode = mode;
     }
-    host.SetStatus(std::string("Интерполяция: ") + InterpName(mode));
+    host.SetStatus(std::string(T("Интерполяция: ")) + InterpName(mode));
 }
 
 // ============================================================================
@@ -452,14 +453,14 @@ float TimelinePanel::DrawTrackHeader(DirectorHost& host, Track& track, const Lay
                                      ? track.JointName
                                      : JointName(scene, track.TargetId, track.Joint);
         std::snprintf(label, sizeof(label), "%s · %s",
-                      bone.empty() ? "?" : bone.c_str(), info.Label);
+                      bone.empty() ? "?" : bone.c_str(), T(info.Label));
     } else if (IsMorphProperty(track.Prop)) {
         // «Blend Shape» без имени цели неотличимо от соседних: у лица их десятки.
         const std::string name = MorphName(scene, track.TargetId, track.Joint);
         std::snprintf(label, sizeof(label), "%s · %s", name.empty() ? "?" : name.c_str(),
-                      info.Label);
+                      T(info.Label));
     } else {
-        std::snprintf(label, sizeof(label), "%s", info.Label);
+        std::snprintf(label, sizeof(label), "%s", T(info.Label));
     }
     // Подпись ОБРЕЗАЕТСЯ по свободному месту в колонке имён. Без обрезки
     // «bone2 · Bone Rotation» уезжал под кнопки справа и дальше на сами дорожки:
@@ -479,7 +480,7 @@ float TimelinePanel::DrawTrackHeader(DirectorHost& host, Track& track, const Lay
     ImGui::SetCursorScreenPos(ImVec2(rowA.x + l.TrackX - kTrackButtonsWidth, y + 2.0f));
     const bool hasKey = host.Document().HasKeyAt(track, host.CurrentTime());
     if (Icons::IconButton("key", Icon::Key,
-                          hasKey ? "Убрать ключ на этом кадре" : "Поставить ключ на этом кадре",
+                          hasKey ? T("Убрать ключ на этом кадре") : T("Поставить ключ на этом кадре"),
                           hasKey, !track.Locked, 18.0f)) {
         host.PushUndo();
         if (hasKey) host.Document().RemoveKeysAt(track, host.CurrentTime());
@@ -493,13 +494,13 @@ float TimelinePanel::DrawTrackHeader(DirectorHost& host, Track& track, const Lay
     ImGui::SameLine(0.0f, 2.0f);
     bool notMuted = !track.Muted;
     if (Icons::ToggleIcon("mute", Icon::Audio, Icon::Mute, notMuted,
-                          notMuted ? "Заглушить дорожку" : "Включить дорожку", 16.0f)) {
+                          notMuted ? T("Заглушить дорожку") : T("Включить дорожку"), 16.0f)) {
         track.Muted = !notMuted;
     }
     ImGui::SameLine(0.0f, 2.0f);
     bool unlocked = !track.Locked;
     if (Icons::ToggleIcon("lock", Icon::Unlock, Icon::Lock, unlocked,
-                          unlocked ? "Заблокировать дорожку" : "Разблокировать дорожку", 16.0f)) {
+                          unlocked ? T("Заблокировать дорожку") : T("Разблокировать дорожку"), 16.0f)) {
         track.Locked = !unlocked;
     }
 
@@ -507,9 +508,9 @@ float TimelinePanel::DrawTrackHeader(DirectorHost& host, Track& track, const Lay
     ImGui::SetCursorScreenPos(rowA);
     ImGui::InvisibleButton("##rowctx", ImVec2(l.TrackX, l.RowH));
     if (ImGui::BeginPopupContextItem("##trackctx")) {
-        ImGui::TextDisabled("%s — %s", TargetName(scene, track.TargetId).c_str(), info.Label);
+        ImGui::TextDisabled("%s — %s", TargetName(scene, track.TargetId).c_str(), T(info.Label));
         ImGui::Separator();
-        if (ImGui::MenuItem("Поставить ключ")) {
+        if (ImGui::MenuItem(T("Поставить ключ"))) {
             host.PushUndo();
             if (IsBoneProperty(track.Prop) || IsMorphProperty(track.Prop)) {
                 host.Document().KeyFromScene(scene, track.TargetId, track.Prop, host.CurrentTime(),
@@ -518,15 +519,15 @@ float TimelinePanel::DrawTrackHeader(DirectorHost& host, Track& track, const Lay
                 host.KeyProperty(track.TargetId, track.Prop);
             }
         }
-        if (IsBoneProperty(track.Prop) && ImGui::MenuItem("Выбрать эту кость")) {
+        if (IsBoneProperty(track.Prop) && ImGui::MenuItem(T("Выбрать эту кость"))) {
             host.SelectBone(track.TargetId, track.Joint);
         }
-        if (ImGui::MenuItem("Очистить все ключи")) {
+        if (ImGui::MenuItem(T("Очистить все ключи"))) {
             host.PushUndo();
             for (Curve& c : track.Channels) c.Clear();
         }
         ImGui::Separator();
-        if (ImGui::MenuItem("Удалить дорожку")) {
+        if (ImGui::MenuItem(T("Удалить дорожку"))) {
             host.PushUndo();
             const int id = track.Id;
             host.Document().RemoveTrack(id);
@@ -590,8 +591,8 @@ void TimelinePanel::DrawKeysRow(DirectorHost& host, Track& track, int channel, c
             host.CaptureUndo();
         }
         if (hovered) {
-            ImGui::SetTooltip("%s %s\nвремя %.3f c (кадр %d)\nзначение %.3f\n%s",
-                              info.Label, info.Channels > 1 ? info.ChannelLabels[channel] : "",
+            ImGui::SetTooltip(T("%s %s\nвремя %.3f c (кадр %d)\nзначение %.3f\n%s"),
+                              T(info.Label), info.Channels > 1 ? info.ChannelLabels[channel] : "",
                               (double)key.Time, (int)(key.Time * host.Document().Fps + 0.5f),
                               (double)key.Value, InterpName(key.Mode));
         }
@@ -636,7 +637,7 @@ void TimelinePanel::DrawClipTrack(DirectorHost& host, ClipTrack& track, const La
     ImGui::PushID(track.Id * 1000);
     ImGui::SetCursorScreenPos(ImVec2(l.Origin.x + l.TrackX - 40.0f, y + 2.0f));
     bool notMuted = !track.Muted;
-    if (Icons::ToggleIcon("cmute", Icon::Audio, Icon::Mute, notMuted, "Заглушить дорожку клипов", 16.0f)) {
+    if (Icons::ToggleIcon("cmute", Icon::Audio, Icon::Mute, notMuted, T("Заглушить дорожку клипов"), 16.0f)) {
         track.Muted = !notMuted;
     }
 
@@ -687,7 +688,7 @@ void TimelinePanel::DrawClipTrack(DirectorHost& host, ClipTrack& track, const La
                 m_draggingBlockEdge = zone;
                 m_dragTimeAnchor = XToTime(l, mx);
             }
-            ImGui::SetTooltip("%s\n%.2f — %.2f c (%.2f c)\nскорость %.2fx, переход %.2f c",
+            ImGui::SetTooltip(T("%s\n%.2f — %.2f c (%.2f c)\nскорость %.2fx, переход %.2f c"),
                               block.Name.c_str(), (double)block.Start,
                               (double)(block.Start + block.Duration), (double)block.Duration,
                               (double)block.Speed, (double)block.BlendIn);
@@ -697,12 +698,12 @@ void TimelinePanel::DrawClipTrack(DirectorHost& host, ClipTrack& track, const La
             ImGui::TextDisabled("%s", block.Name.c_str());
             ImGui::Separator();
             ImGui::SetNextItemWidth(140.0f);
-            if (ImGui::DragFloat("Скорость", &block.Speed, 0.01f, 0.05f, 8.0f, "%.2fx")) host.PushUndo();
+            if (ImGui::DragFloat(T("Скорость"), &block.Speed, 0.01f, 0.05f, 8.0f, "%.2fx")) host.PushUndo();
             ImGui::SetNextItemWidth(140.0f);
-            if (ImGui::DragFloat("Переход", &block.BlendIn, 0.01f, 0.0f, 3.0f, "%.2f c")) host.PushUndo();
-            ImGui::Checkbox("Зациклить", &block.Loop);
+            if (ImGui::DragFloat(T("Переход"), &block.BlendIn, 0.01f, 0.0f, 3.0f, T("%.2f c"))) host.PushUndo();
+            ImGui::Checkbox(T("Зациклить"), &block.Loop);
             ImGui::Separator();
-            if (ImGui::MenuItem("Удалить блок")) {
+            if (ImGui::MenuItem(T("Удалить блок"))) {
                 host.PushUndo();
                 track.Blocks.erase(track.Blocks.begin() + (long)i);
                 ImGui::EndPopup();
@@ -733,7 +734,7 @@ void TimelinePanel::DrawAudioRow(DirectorHost& host, const Layout& l, float y, I
     ImGui::PushID("audioRow");
     ImGui::SetCursorScreenPos(ImVec2(l.Origin.x + l.TrackX - 40.0f, y + 4.0f));
     bool notMuted = !audio.Muted;
-    if (Icons::ToggleIcon("amute", Icon::Audio, Icon::Mute, notMuted, "Заглушить звук", 16.0f)) {
+    if (Icons::ToggleIcon("amute", Icon::Audio, Icon::Mute, notMuted, T("Заглушить звук"), 16.0f)) {
         audio.Muted = !notMuted;
     }
 
@@ -756,7 +757,7 @@ void TimelinePanel::DrawAudioRow(DirectorHost& host, const Layout& l, float y, I
         dl->AddLine(ImVec2(a.x, mid), ImVec2(b.x, mid), (color & 0x00FFFFFF) | 0x40000000, 1.0f);
     } else {
         dl->AddText(ImVec2(a.x + 8.0f, a.y + 6.0f), Theme::Colors::TextFaint,
-                    "Волна недоступна для этого формата — звук всё равно проигрывается");
+                    T("Волна недоступна для этого формата — звук всё равно проигрывается"));
     }
 
     ImGui::SetCursorScreenPos(a);
@@ -765,11 +766,11 @@ void TimelinePanel::DrawAudioRow(DirectorHost& host, const Layout& l, float y, I
         ImGui::TextDisabled("%s", audio.Path().c_str());
         ImGui::Separator();
         ImGui::SetNextItemWidth(140.0f);
-        ImGui::DragFloat("Смещение", &audio.Offset, 0.01f, -60.0f, 600.0f, "%.2f c");
+        ImGui::DragFloat(T("Смещение"), &audio.Offset, 0.01f, -60.0f, 600.0f, T("%.2f c"));
         ImGui::SetNextItemWidth(140.0f);
-        ImGui::SliderFloat("Громкость", &audio.Volume, 0.0f, 2.0f, "%.2f");
+        ImGui::SliderFloat(T("Громкость"), &audio.Volume, 0.0f, 2.0f, "%.2f");
         ImGui::Separator();
-        if (ImGui::MenuItem("Убрать звук")) {
+        if (ImGui::MenuItem(T("Убрать звук"))) {
             host.PushUndo();
             audio.Clear();
         }
@@ -788,7 +789,7 @@ void TimelinePanel::DrawAddTrackMenu(DirectorHost& host) {
     Scene& scene = host.CurrentScene();
     const int id = host.SelectedId();
     if (id < 0) {
-        ImGui::TextDisabled("Сначала выберите объект в сцене");
+        ImGui::TextDisabled("%s", T("Сначала выберите объект в сцене"));
         return;
     }
 
@@ -799,14 +800,14 @@ void TimelinePanel::DrawAddTrackMenu(DirectorHost& host) {
     for (Property prop : applicable) {
         const PropertyInfo& info = PropertyInfoOf(prop);
         const bool exists = host.Document().FindTrack(id, prop) != nullptr;
-        if (ImGui::MenuItem(info.Label, nullptr, false, !exists)) {
+        if (ImGui::MenuItem(T(info.Label), nullptr, false, !exists)) {
             host.PushUndo();
             // Новая дорожка сразу получает ключ на текущем кадре: пустая
             // дорожка ничего не делает и выглядит как «не сработало».
             host.KeyProperty(id, prop);
-            host.SetStatus(std::string("Дорожка добавлена: ") + info.Label);
+            host.SetStatus(std::string(T("Дорожка добавлена: ")) + T(info.Label));
         }
-        if (exists && ImGui::IsItemHovered()) ImGui::SetTooltip("Дорожка уже есть");
+        if (exists && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", T("Дорожка уже есть"));
     }
 
     // Персонаж — отдельный пункт: у него не свойство, а блоки клипов.
@@ -815,7 +816,7 @@ void TimelinePanel::DrawAddTrackMenu(DirectorHost& host) {
         if (const AnimatedModelComponent* am = scene.Registry().try_get<AnimatedModelComponent>(obj.Entity())) {
             ImGui::Separator();
             const bool hasClips = am->Model && !am->Model->Clips().empty();
-            if (ImGui::MenuItem("Дорожка клипов", nullptr, false, hasClips)) {
+            if (ImGui::MenuItem(T("Дорожка клипов"), nullptr, false, hasClips)) {
                 host.PushUndo();
                 ClipTrack& track = host.Document().EnsureClipTrack(id);
                 ClipBlock block;
@@ -825,10 +826,10 @@ void TimelinePanel::DrawAddTrackMenu(DirectorHost& host) {
                 const float length = am->Model->Clips()[0].Duration;
                 block.Duration = length > 0.01f ? length : 1.0f;
                 track.Blocks.push_back(block);
-                host.SetStatus("Дорожка клипов добавлена");
+                host.SetStatus(T("Дорожка клипов добавлена"));
             }
             if (!hasClips && ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("В модели нет анимационных клипов");
+                ImGui::SetTooltip("%s", T("В модели нет анимационных клипов"));
             }
         }
     }
@@ -858,7 +859,7 @@ void TimelinePanel::DrawTimelineTab(DirectorHost& host, const Layout& l) {
         if (y > l.Origin.y + l.Height) break;
         if (!m_filter.empty()) {
             const std::string name = TargetName(host.CurrentScene(), track.TargetId);
-            const std::string label = PropertyInfoOf(track.Prop).Label;
+            const std::string label = T(PropertyInfoOf(track.Prop).Label);
             if (name.find(m_filter) == std::string::npos &&
                 label.find(m_filter) == std::string::npos &&
                 track.JointName.find(m_filter) == std::string::npos) continue;
@@ -885,9 +886,9 @@ void TimelinePanel::DrawTimelineTab(DirectorHost& host, const Layout& l) {
 
     if (doc.Tracks.empty() && doc.ClipTracks.empty()) {
         dl->AddText(ImVec2(l.Origin.x + 16.0f, l.Origin.y + l.RulerH + 14.0f), Theme::Colors::TextDim,
-                    "Дорожек пока нет.");
+                    T("Дорожек пока нет."));
         dl->AddText(ImVec2(l.Origin.x + 16.0f, l.Origin.y + l.RulerH + 34.0f), Theme::Colors::TextFaint,
-                    "Выберите объект и нажмите «+ Add Track», либо включите Auto Key и просто двигайте объект.");
+                    T("Выберите объект и нажмите «+ Add Track», либо включите Auto Key и просто двигайте объект."));
     }
 }
 
@@ -904,7 +905,7 @@ void TimelinePanel::DrawDopeTab(DirectorHost& host, const Layout& l) {
 
         dl->AddText(ImVec2(l.Origin.x + 10.0f, y + 3.0f),
                     track.Muted ? Theme::Colors::TextFaint : Theme::Colors::Text,
-                    (TargetName(scene, track.TargetId) + " · " + PropertyInfoOf(track.Prop).Label).c_str());
+                    (TargetName(scene, track.TargetId) + " · " + T(PropertyInfoOf(track.Prop).Label)).c_str());
 
         const float cy = y + l.RowH * 0.5f;
         const float left = l.Origin.x + l.TrackX;
@@ -961,7 +962,7 @@ void TimelinePanel::DrawDopeTab(DirectorHost& host, const Layout& l) {
 
     if (doc.Tracks.empty()) {
         dl->AddText(ImVec2(l.Origin.x + 16.0f, l.Origin.y + l.RulerH + 14.0f), Theme::Colors::TextDim,
-                    "Ключей пока нет — Dope Sheet показывает тайминг уже поставленных ключей.");
+                    T("Ключей пока нет — Dope Sheet показывает тайминг уже поставленных ключей."));
     }
 }
 
@@ -994,34 +995,34 @@ bool TimelinePanel::SelectionRange(float& from, float& to, std::vector<int>& tra
 void TimelinePanel::DrawKeyOpsMenu(DirectorHost& host) {
     AnimationDocument& doc = host.Document();
     char label[48];
-    if (m_clipboard.Empty()) std::snprintf(label, sizeof(label), "Ключи");
-    else std::snprintf(label, sizeof(label), "Ключи (в буфере %d)", m_clipboard.Count());
+    if (m_clipboard.Empty()) std::snprintf(label, sizeof(label), "%s", T("Ключи"));
+    else std::snprintf(label, sizeof(label), T("Ключи (в буфере %d)"), m_clipboard.Count());
     if (!ImGui::BeginMenu(label)) return;
 
     float from = 0.0f, to = 0.0f;
     std::vector<int> tracks;
     const bool haveSelection = SelectionRange(from, to, tracks);
 
-    if (!haveSelection) ImGui::TextDisabled("Выберите ключи в таймлайне");
+    if (!haveSelection) ImGui::TextDisabled("%s", T("Выберите ключи в таймлайне"));
 
     ImGui::BeginDisabled(!haveSelection);
-    if (ImGui::MenuItem("Копировать")) {
+    if (ImGui::MenuItem(T("Копировать"))) {
         const int n = doc.CopyKeys(host.SelectedId(), tracks, from, to, m_clipboard);
-        host.SetStatus("Скопировано ключей: " + std::to_string(n));
+        host.SetStatus(T("Скопировано ключей: ") + std::to_string(n));
     }
     ImGui::EndDisabled();
 
     ImGui::BeginDisabled(m_clipboard.Empty() || host.SelectedId() < 0);
-    if (ImGui::MenuItem("Вставить на головку")) {
+    if (ImGui::MenuItem(T("Вставить на головку"))) {
         host.PushUndo();
         const int n = doc.PasteKeys(host.SelectedId(), m_clipboard, host.CurrentTime());
-        host.SetStatus("Вставлено ключей: " + std::to_string(n));
+        host.SetStatus(T("Вставлено ключей: ") + std::to_string(n));
         host.SetCurrentTime(host.CurrentTime()); // переприменить документ к сцене
     }
     if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Ключи лягут на ВЫБРАННЫЙ сейчас объект.\n"
+        ImGui::SetTooltip("%s", T("Ключи лягут на ВЫБРАННЫЙ сейчас объект.\n"
                           "Так анимация переносится между объектами:\n"
-                          "скопировать у одного, выбрать другой, вставить.");
+                          "скопировать у одного, выбрать другой, вставить."));
     }
     ImGui::EndDisabled();
 
@@ -1029,38 +1030,38 @@ void TimelinePanel::DrawKeyOpsMenu(DirectorHost& host) {
 
     ImGui::BeginDisabled(!haveSelection);
     ImGui::SetNextItemWidth(120.0f);
-    ImGui::DragFloat("Множитель", &m_scaleFactor, 0.01f, 0.05f, 20.0f, "%.2fx");
-    if (ImGui::MenuItem("Растянуть во времени")) {
+    ImGui::DragFloat(T("Множитель"), &m_scaleFactor, 0.01f, 0.05f, 20.0f, "%.2fx");
+    if (ImGui::MenuItem(T("Растянуть во времени"))) {
         host.PushUndo();
         // Точка опоры — ЛЕВЫЙ край выделения: растягивая кусок, аниматор ждёт,
         // что его начало останется на месте, а сдвинется хвост.
         const int n = doc.ScaleKeyTimes(host.SelectedId(), tracks, from, to, from, m_scaleFactor);
-        host.SetStatus("Растянуто ключей: " + std::to_string(n));
+        host.SetStatus(T("Растянуто ключей: ") + std::to_string(n));
         host.SetCurrentTime(host.CurrentTime());
     }
     if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Движение получилось правильным, но слишком быстрым\n"
-                          "или медленным: растянуть весь кусок, сохранив рисунок.");
+        ImGui::SetTooltip("%s", T("Движение получилось правильным, но слишком быстрым\n"
+                          "или медленным: растянуть весь кусок, сохранив рисунок."));
     }
     ImGui::EndDisabled();
 
     ImGui::Separator();
 
     ImGui::BeginDisabled(!haveSelection);
-    if (ImGui::MenuItem("Запечь в ключи по кадрам")) {
+    if (ImGui::MenuItem(T("Запечь в ключи по кадрам"))) {
         host.PushUndo();
         int n = 0;
         for (int id : tracks) {
             if (Track* track = doc.TrackById(id)) n += doc.BakeTrack(*track, from, to, doc.Fps);
         }
-        host.SetStatus("Запечено ключей: " + std::to_string(n));
+        host.SetStatus(T("Запечено ключей: ") + std::to_string(n));
         host.SetCurrentTime(host.CurrentTime());
     }
     if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Кривая превращается в ключ на каждом кадре.\n"
+        ImGui::SetTooltip("%s", T("Кривая превращается в ключ на каждом кадре.\n"
                           "Нужно, чтобы править отдельные кадры руками\n"
                           "и чтобы отдать анимацию туда, где нет Безье.\n"
-                          "Форма сохранится, но сглаживание уже не вернуть.");
+                          "Форма сохранится, но сглаживание уже не вернуть."));
     }
     ImGui::EndDisabled();
 
@@ -1076,21 +1077,21 @@ void TimelinePanel::DrawGraphMenu(DirectorHost& host) {
         }
     }
     char label[64];
-    if (hidden > 0) std::snprintf(label, sizeof(label), "Кривые (скрыто %d)", hidden);
-    else std::snprintf(label, sizeof(label), "Кривые");
+    if (hidden > 0) std::snprintf(label, sizeof(label), T("Кривые (скрыто %d)"), hidden);
+    else std::snprintf(label, sizeof(label), "%s", T("Кривые"));
 
     if (!ImGui::BeginMenu(label)) return;
 
-    ImGui::MenuItem("Автомасштаб", nullptr, &m_graphAutoFit);
-    if (ImGui::MenuItem("Нормализовать", nullptr, &m_graphNormalize) && m_graphNormalize) {
+    ImGui::MenuItem(T("Автомасштаб"), nullptr, &m_graphAutoFit);
+    if (ImGui::MenuItem(T("Нормализовать"), nullptr, &m_graphNormalize) && m_graphNormalize) {
         m_graphAutoFit = false; // общий масштаб в этом режиме ни при чём
     }
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip(
-            "Растянуть каждую кривую на её собственный размах.\n"
+            "%s", T("Растянуть каждую кривую на её собственный размах.\n"
             "Нужно, когда у объекта ключуются величины разных единиц:\n"
             "поворот в 720° и позиция в 2 м на общей шкале означают,\n"
-            "что позиция становится плоской линией у нуля.");
+            "что позиция становится плоской линией у нуля."));
     }
     ImGui::Separator();
     DrawGraphChannelFilter(host);
@@ -1127,9 +1128,9 @@ void TimelinePanel::DrawGraphChannelFilter(DirectorHost& host) {
             char name[96];
             const char* channelName = info.ChannelLabels[c];
             if (channelName && channelName[0]) {
-                std::snprintf(name, sizeof(name), "%s · %s", info.Label, channelName);
+                std::snprintf(name, sizeof(name), "%s · %s", T(info.Label), channelName);
             } else {
-                std::snprintf(name, sizeof(name), "%s", info.Label);
+                std::snprintf(name, sizeof(name), "%s", T(info.Label));
             }
             // Цветная метка перед именем — те же цвета, что у самих кривых:
             // иначе в списке из девяти строк непонятно, какая из них какая.
@@ -1143,11 +1144,11 @@ void TimelinePanel::DrawGraphChannelFilter(DirectorHost& host) {
             ImGui::PopID();
         }
     }
-    if (!any) ImGui::TextDisabled("У объекта нет кривых");
+    if (!any) ImGui::TextDisabled("%s", T("У объекта нет кривых"));
 
     if (!m_hiddenChannels.empty()) {
         ImGui::Separator();
-        if (ImGui::MenuItem("Показать все")) m_hiddenChannels.clear();
+        if (ImGui::MenuItem(T("Показать все"))) m_hiddenChannels.clear();
     }
 }
 
@@ -1186,8 +1187,8 @@ void TimelinePanel::DrawGraphTab(DirectorHost& host, const Layout& l) {
 
     if (shown.empty()) {
         dl->AddText(ImVec2(l.Origin.x + 16.0f, top + 14.0f), Theme::Colors::TextDim,
-                    selectedId < 0 ? "Выберите объект — здесь появятся его кривые."
-                                   : "У выбранного объекта нет дорожек анимации.");
+                    selectedId < 0 ? T("Выберите объект — здесь появятся его кривые.")
+                                   : T("У выбранного объекта нет дорожек анимации."));
         return;
     }
 
@@ -1409,7 +1410,7 @@ void TimelinePanel::DrawGraphTab(DirectorHost& host, const Layout& l) {
 // ============================================================================
 
 void TimelinePanel::Draw(DirectorHost& host) {
-    ImGui::Begin("Timeline");
+    ImGui::Begin((std::string(T("Таймлайн")) + "###Timeline").c_str());
 
     AnimationDocument& doc = host.Document();
     const bool simple = host.SimpleMode();
@@ -1425,11 +1426,11 @@ void TimelinePanel::Draw(DirectorHost& host) {
         // В простом режиме вкладок нет: единственный доступный вид — Timeline.
         m_tab = 0;
         ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted("Timeline");
+        ImGui::TextUnformatted(T("Таймлайн"));
         ImGui::SameLine(0.0f, 12.0f);
-        ImGui::TextDisabled("(редактор кривых и Dope Sheet — в продвинутом режиме)");
+        ImGui::TextDisabled("%s", T("(редактор кривых и Dope Sheet — в продвинутом режиме)"));
     } else if (ImGui::BeginTabBar("##timelineTabs")) {
-        static const char* kTabs[] = {"Timeline", "Graph Editor", "Dope Sheet"};
+        const char* kTabs[] = {T("Таймлайн"), T("Редактор кривых"), "Dope Sheet"};
         for (int i = 0; i < 3; ++i) {
             const ImGuiTabItemFlags flags =
                 (m_forceTab == i) ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None;
@@ -1443,21 +1444,21 @@ void TimelinePanel::Draw(DirectorHost& host) {
     }
 
     // --- Строка управления над дорожками ---
-    if (ImGui::Button("+ Add Track")) ImGui::OpenPopup("##addTrack");
+    if (ImGui::Button(T("+ Дорожка"))) ImGui::OpenPopup("##addTrack");
     if (ImGui::BeginPopup("##addTrack")) {
         DrawAddTrackMenu(host);
         ImGui::EndPopup();
     }
     ImGui::SameLine();
     ImGui::SetNextItemWidth(180.0f);
-    ImGui::InputTextWithHint("##trackSearch", "Search tracks...", &m_filter);
+    ImGui::InputTextWithHint("##trackSearch", T("Поиск дорожек…"), &m_filter);
 
     if (!simple) {
         ImGui::SameLine();
-        if (ImGui::Button("Интерполяция") ) ImGui::OpenPopup("##interp");
+        if (ImGui::Button(T("Интерполяция")) ) ImGui::OpenPopup("##interp");
         if (ImGui::BeginPopup("##interp")) {
             if (m_selectedKeys.empty()) {
-                ImGui::TextDisabled("Сначала выберите ключи");
+                ImGui::TextDisabled("%s", T("Сначала выберите ключи"));
             } else {
                 const Interp modes[] = {Interp::Smooth, Interp::Linear, Interp::Constant,
                                         Interp::EaseIn, Interp::EaseOut, Interp::EaseInOut,
@@ -1477,21 +1478,21 @@ void TimelinePanel::Draw(DirectorHost& host) {
     }
 
     ImGui::SameLine();
-    if (ImGui::Button("Fit")) { m_viewStart = 0.0f; m_viewEnd = doc.Duration; }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Показать весь ролик");
+    if (ImGui::Button(T("Вписать"))) { m_viewStart = 0.0f; m_viewEnd = doc.Duration; }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", T("Показать весь ролик"));
 
     // Правый блок «длительность + подгонка»: позиционируем от правого края с
     // запасом под обе кнопки, иначе на узкой панели последняя обрезается.
     ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - 268.0f);
     ImGui::SetNextItemWidth(110.0f);
     float duration = doc.Duration;
-    if (ImGui::DragFloat("##duration", &duration, 0.1f, 0.1f, 36000.0f, "%.2f c")) {
+    if (ImGui::DragFloat("##duration", &duration, 0.1f, 0.1f, 36000.0f, T("%.2f c"))) {
         host.PushUndo();
         doc.Duration = duration;
     }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Длительность ролика");
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", T("Длительность ролика"));
     ImGui::SameLine();
-    if (ImGui::SmallButton("По содерж.")) {
+    if (ImGui::SmallButton(T("По содерж."))) {
         const float end = doc.ContentEnd();
         if (end > 0.0f) {
             host.PushUndo();
@@ -1561,7 +1562,7 @@ void TimelinePanel::Draw(DirectorHost& host) {
         dl->AddRect(a, b, IM_COL32(120, 190, 250, 200), 0.0f, 0, 1.2f);
         if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
             m_boxSelecting = false;
-            host.SetStatus("Выбрано ключей: " + std::to_string(m_selectedKeys.size()));
+            host.SetStatus(T("Выбрано ключей: ") + std::to_string(m_selectedKeys.size()));
         }
     }
     if (m_draggingPlayhead) {

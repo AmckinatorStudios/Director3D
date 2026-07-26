@@ -18,6 +18,7 @@
 #include "project/UndoStack.h"
 #include "render/VideoWriter.h"
 #include "ui/FileDialog.h"
+#include "ui/Localization.h"
 #include "sage/scene/Components.h"
 #include "sage/scene/Scene.h"
 #include "sage/scene/Transform.h"
@@ -1109,6 +1110,78 @@ void TestFileDialog() {
     }
 }
 
+// --- Локализация -----------------------------------------------------------
+
+// Полноту перевода считает scripts/check_i18n.py по исходникам — во время
+// работы полного списка ключей просто не существует (ключ равен русской
+// строке, и «все ключи» есть только в коде панелей).
+//
+// Здесь проверяется другое и не менее важное: САМ МЕХАНИЗМ. Словарь читается,
+// переключение языка работает, отсутствие перевода не превращает надпись в
+// пустоту, а указатель живёт дольше вызова. Последнее — не педантизм: ImGui
+// хранит переданную ему строку до конца кадра, и возврат c_str() от временного
+// объекта дал бы мусор на экране в самом безобидном случае и падение в худшем.
+void TestLocalization() {
+    Section("Локализация");
+
+    // Словарь ищется там же, где его ищет программа, — рядом с рабочим
+    // каталогом. Не найти его здесь означало бы, что собранная программа
+    // тоже его не найдёт, поэтому это провал, а не пропуск проверки.
+    const char* candidates[] = {"assets/i18n", "../assets/i18n", "../../assets/i18n"};
+    bool loaded = false;
+    for (const char* dir : candidates) {
+        if (i18n::LoadDictionary(dir)) { loaded = true; break; }
+    }
+    Check(loaded, "словарь en.json найден и прочитан");
+    if (!loaded) return;
+    Check(i18n::DictionarySize() > 300, "в словаре есть содержимое");
+
+    const i18n::Language before = i18n::CurrentLanguage();
+
+    // По-русски перевод обязан вернуть ТУ ЖЕ строку — не копию: русский путь
+    // проходят каждый кадр сотни раз, и заглядывать в словарь там незачем.
+    i18n::SetLanguage(i18n::Language::Russian);
+    const char* russian = "Открыть проект";
+    Check(T(russian) == russian, "русский язык возвращает исходный указатель");
+
+    i18n::SetLanguage(i18n::Language::English);
+    // Команды меню по-английски пишутся с заглавных («Open Project»), подсказки
+    // — обычным предложением. Разнобоя здесь нет, так принято в английском
+    // интерфейсе, и проверка закрепляет именно это.
+    Check(std::string(T("Открыть проект")) == "Open Project", "надпись переведена");
+    Check(std::string(T("Открыть проект (Ctrl+O)")) == "Open project (Ctrl+O)",
+          "подсказка переведена обычным предложением");
+    Check(std::string(T("Файл")) == "File", "меню переведено");
+    // Формат с суффиксом секунд — тот случай, ради которого проверка и нужна:
+    // в строке нет ни одной кириллической буквы, и её легко не заметить.
+    Check(std::string(T("%.2f c")) == "%.2f s", "суффикс секунд переведён");
+
+    // Указатель обязан пережить вызов: два запроса подряд дают один и тот же
+    // адрес, потому что строка лежит в словаре, а не в буфере на стеке.
+    const char* first = T("Открыть проект");
+    const char* second = T("Открыть проект");
+    Check(first == second, "перевод возвращает стабильный указатель");
+
+    // Незнакомая строка — не дыра в интерфейсе, а сама строка, плюс запись в
+    // список пропусков.
+    const char* unknown = "Строка, которой заведомо нет в словаре 42";
+    const size_t missingBefore = i18n::MissingKeys().size();
+    Check(std::string(T(unknown)) == unknown, "без перевода показывается русский текст");
+    Check(i18n::MissingKeys().size() == missingBefore + 1, "пропуск записан");
+    T(unknown);
+    Check(i18n::MissingKeys().size() == missingBefore + 1, "повтор не дублирует запись");
+
+    Check(std::string(i18n::LanguageCode()) == "en", "код языка совпадает с выбранным");
+    Check(i18n::SetLanguageByCode("ru") && i18n::CurrentLanguage() == i18n::Language::Russian,
+          "язык переключается по коду");
+    Check(!i18n::SetLanguageByCode("de"), "неизвестный код отвергается");
+    Check(i18n::CurrentLanguage() == i18n::Language::Russian,
+          "отвергнутый код не меняет язык");
+
+    // Все остальные проверки печатают по-русски — возвращаем как было.
+    i18n::SetLanguage(before);
+}
+
 // --- Дорожки ---------------------------------------------------------------
 
 // Дорожка — центральная сущность инструмента: всё, что аниматор делает, в итоге
@@ -1548,6 +1621,7 @@ int RunSelfTest() {
     TestDocument();
     TestTracks();
     TestFileDialog();
+    TestLocalization();
     TestClipTracks();
     TestAudioTrackTimeline();
     TestUndo();

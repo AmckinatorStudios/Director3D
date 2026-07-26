@@ -5,6 +5,7 @@
 #include <sstream>
 
 #include "sage/core/Log.h"
+#include "ui/Localization.h"
 
 #ifdef _WIN32
 #define D3D_POPEN _popen
@@ -158,7 +159,7 @@ bool OpenFile(const std::string& title, const std::vector<Filter>& filters,
             const std::string patterns = AllPatterns(filters);
             cmd << "kdialog --title " << Quote(title) << " --getopenfilename "
                 << Quote(startDir.empty() ? "." : startDir);
-            if (!patterns.empty()) cmd << ' ' << Quote(patterns + "|Поддерживаемые файлы");
+            if (!patterns.empty()) cmd << ' ' << Quote(patterns + "|" + T("Поддерживаемые файлы"));
             cmd << " 2>/dev/null";
             break;
         }
@@ -175,7 +176,7 @@ bool OpenFile(const std::string& title, const std::vector<Filter>& filters,
                 for (char& c : patterns) if (c == ' ') c = ';';
                 filter += f.Name + "|" + patterns;
             }
-            if (filter.empty()) filter = "Все файлы|*.*";
+            if (filter.empty()) filter = std::string(T("Все файлы")) + "|*.*";
             std::string script = "Add-Type -AssemblyName System.Windows.Forms;";
             script += "$d=New-Object System.Windows.Forms.OpenFileDialog;";
             script += "$d.Title='" + title + "';";
@@ -210,7 +211,7 @@ bool SaveFile(const std::string& title, const std::vector<Filter>& filters,
             const std::string start = startDir.empty() ? suggestedName : startDir + "/" + suggestedName;
             cmd << "kdialog --title " << Quote(title) << " --getsavefilename "
                 << Quote(start.empty() ? "." : start);
-            if (!patterns.empty()) cmd << ' ' << Quote(patterns + "|Поддерживаемые файлы");
+            if (!patterns.empty()) cmd << ' ' << Quote(patterns + "|" + T("Поддерживаемые файлы"));
             cmd << " 2>/dev/null";
             break;
         }
@@ -229,7 +230,7 @@ bool SaveFile(const std::string& title, const std::vector<Filter>& filters,
                 for (char& c : patterns) if (c == ' ') c = ';';
                 filter += f.Name + "|" + patterns;
             }
-            if (filter.empty()) filter = "Все файлы|*.*";
+            if (filter.empty()) filter = std::string(T("Все файлы")) + "|*.*";
             std::string script = "Add-Type -AssemblyName System.Windows.Forms;";
             script += "$d=New-Object System.Windows.Forms.SaveFileDialog;";
             script += "$d.Title='" + title + "';";
