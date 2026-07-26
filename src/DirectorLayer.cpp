@@ -149,6 +149,10 @@ void DirectorLayer::OnAttach() {
     if (std::getenv("D3D_ADVANCED")) m_simpleMode = false;
     if (const char* tab = std::getenv("D3D_TIMELINE_TAB")) m_timeline.SetTab(std::atoi(tab));
     if (std::getenv("D3D_DEMO")) BuildDemoAnimation();
+    // Полная демо-постановка в интерфейсе — то же, что уходит в --showcase.
+    // Нужна не только для снимков: это самый быстрый способ увидеть готовый
+    // ролик с монтажом, клипами и ручной позой, ничего не собирая руками.
+    if (std::getenv("D3D_SHOWCASE")) BuildShowcase();
     // Персонаж с выбранной костью — для снимков интерфейса без человека за
     // мышью: иначе панель Bone и скелет во вьюпорте нечем показать.
     if (const char* boneEnv = std::getenv("D3D_CHARACTER")) {
