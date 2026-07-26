@@ -164,6 +164,10 @@ public:
     // --- Рендер секвенции ---------------------------------------------------
     virtual SequenceExporter& Exporter() = 0;
     virtual SequenceExporter::Settings& RenderSettings() = 0;
+    // Очередь заданий рендера и её запуск. Очередь живёт у приложения, а не у
+    // диалога: она переживает закрытие окна настроек и продолжает идти.
+    virtual RenderQueue& Queue() = 0;
+    virtual void StartQueue() = 0;
     virtual void StartRender() = 0;
 
     // --- Панель ассетов ------------------------------------------------------

@@ -231,4 +231,46 @@ void SequenceExporter::Cancel() {
     LOG_INFO("Export") << "Экспорт прерван на кадре " << m_current << " из " << m_total;
 }
 
+
+// ============================================================================
+//  Очередь заданий
+// ============================================================================
+
+int RenderQueue::Remaining() const {
+    int left = 0;
+    for (const RenderQueueJob& job : Jobs) {
+        if (!job.Done) ++left;
+    }
+    return left;
+}
+
+bool RenderQueue::TakeNext(SequenceExporter::Settings& outSettings) {
+    for (size_t i = 0; i < Jobs.size(); ++i) {
+        if (Jobs[i].Done) continue;
+        m_current = (int)i;
+        outSettings = Jobs[i].Settings;
+        return true;
+    }
+    m_current = -1;
+    return false;
+}
+
+void RenderQueue::FinishCurrent(const std::string& error) {
+    if (m_current < 0 || m_current >= (int)Jobs.size()) return;
+    RenderQueueJob& job = Jobs[(size_t)m_current];
+    job.Done = true;
+    // Пустая ошибка — успех. Отдельного флага нет намеренно: два поля,
+    // означающие одно и то же, рано или поздно разъезжаются.
+    job.Result = error.empty() ? std::string("Готово") : error;
+    m_current = -1;
+}
+
+void RenderQueue::Reset() {
+    for (RenderQueueJob& job : Jobs) {
+        job.Done = false;
+        job.Result.clear();
+    }
+    m_current = -1;
+}
+
 } // namespace d3d

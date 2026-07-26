@@ -505,6 +505,71 @@ void DialogsPanel::DrawRenderSettings(DirectorHost& host) {
                             frames > 0 ? frames : 0, settings.BaseName.c_str());
     }
 
+    // --- Очередь заданий ---
+    // Рендер блокирует работу, поэтому снять три плана — это трижды дождаться
+    // конца и трижды переставить настройки руками. Очередь превращает это в
+    // «поставил задания и ушёл».
+    ImGui::Spacing();
+    RenderQueue& queue = host.Queue();
+    char queueLabel[64];
+    std::snprintf(queueLabel, sizeof(queueLabel), "Очередь (%d)", (int)queue.Jobs.size());
+    if (ImGui::CollapsingHeader(queueLabel)) {
+        if (queue.Jobs.empty()) {
+            ImGui::TextDisabled("Заданий нет. Настройте параметры выше и нажмите «В очередь».");
+        }
+        for (size_t i = 0; i < queue.Jobs.size(); ++i) {
+            RenderQueueJob& job = queue.Jobs[i];
+            ImGui::PushID((int)i);
+            const bool current = queue.CurrentIndex() == (int)i;
+            if (current) ImGui::PushStyleColor(ImGuiCol_Text, Theme::Colors::Good);
+            ImGui::Text("%zu. %s", i + 1, job.Name.c_str());
+            if (current) ImGui::PopStyleColor();
+            ImGui::SameLine(300.0f);
+            if (job.Done) ImGui::TextDisabled("%s", job.Result.c_str());
+            else if (current) ImGui::TextDisabled("идёт…");
+            else ImGui::TextDisabled("ждёт");
+            ImGui::SameLine(430.0f);
+            if (ImGui::SmallButton("Убрать")) {
+                queue.Jobs.erase(queue.Jobs.begin() + (long)i);
+                ImGui::PopID();
+                break;
+            }
+            ImGui::PopID();
+        }
+
+        ImGui::Spacing();
+        if (ImGui::Button("В очередь", ImVec2(120.0f, 0.0f))) {
+            RenderQueueJob job;
+            job.Settings = settings;
+            // Имя собирается из того, что отличает задания друг от друга:
+            // диапазон и разрешение. «Задание 1/2/3» ничего бы не сказало.
+            char name[160];
+            std::snprintf(name, sizeof(name), "%s · %dx%d · %.1f–%.1f c",
+                          settings.BaseName.c_str(), settings.Width, settings.Height,
+                          (double)settings.StartTime,
+                          (double)(settings.EndTime > settings.StartTime ? settings.EndTime
+                                                                         : doc.Duration));
+            job.Name = name;
+            queue.Jobs.push_back(std::move(job));
+            host.SetStatus("Добавлено в очередь: " + std::to_string(queue.Jobs.size()));
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Запомнить ТЕКУЩИЕ настройки как задание.\n"
+                              "Меняйте диапазон и разрешение и добавляйте ещё.");
+        }
+        ImGui::SameLine();
+        ImGui::BeginDisabled(queue.Jobs.empty());
+        if (ImGui::Button("Запустить очередь", ImVec2(160.0f, 0.0f))) {
+            host.StartQueue();
+            Close();
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(queue.Jobs.empty());
+        if (ImGui::Button("Очистить", ImVec2(100.0f, 0.0f))) queue.Jobs.clear();
+        ImGui::EndDisabled();
+    }
+
     ImGui::Separator();
     // Рендер в MP4 без кодировщика заведомо провалится — кнопку гасим, причина
     // уже написана выше.

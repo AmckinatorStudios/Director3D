@@ -800,6 +800,15 @@ void DirectorLayer::OnUpdate(float dt) {
             ApplyDocument(true);
             if (m_smokeTest) FinishSmokeTest();
             if (m_jobStarted) { m_jobStarted = false; FinishRenderJob(); }
+            // Очередь подхватывает следующее задание сразу: пауза между ними
+            // означала бы, что оператор снова ждёт у экрана — ровно то, ради
+            // чего очередь и заводилась.
+            if (m_queue.Running()) {
+                m_queue.FinishCurrent(m_exporter.Failed() ? m_exporter.Error() : std::string());
+                if (!StartNextQueued()) {
+                    SetStatus("Очередь выполнена: заданий " + std::to_string(m_queue.Jobs.size()));
+                }
+            }
         }
         return;
     }
@@ -1934,6 +1943,35 @@ void DirectorLayer::StartRender() {
         return;
     }
     SetStatus("Рендер запущен: " + std::to_string(m_exporter.TotalFrames()) + " кадр(ов)");
+}
+
+void DirectorLayer::StartQueue() {
+    if (m_queue.Jobs.empty()) {
+        SetStatus("Очередь пуста — добавьте задания в настройках рендера");
+        return;
+    }
+    m_queue.Reset(); // прогон с начала: «запустить» значит снять всё заново
+    if (!StartNextQueued()) SetStatus("Очередь не запустилась");
+}
+
+bool DirectorLayer::StartNextQueued() {
+    SequenceExporter::Settings settings;
+    if (!m_queue.TakeNext(settings)) return false;
+
+    m_renderSettings = settings;
+    m_timeBeforeRender = CurrentTime();
+    m_playback.Pause();
+
+    std::string err;
+    if (!m_exporter.Begin(m_renderSettings, m_doc, *m_scene, err)) {
+        // Провал ОДНОГО задания не должен ронять очередь: следующее может быть
+        // в другом формате или с другой камерой и вполне рабочим.
+        LOG_ERROR("Queue") << "Задание пропущено: " << err;
+        m_queue.FinishCurrent(err);
+        return StartNextQueued();
+    }
+    SetStatus("Очередь: осталось заданий " + std::to_string(m_queue.Remaining()));
+    return true;
 }
 
 void DirectorLayer::SetStatus(const std::string& message) {

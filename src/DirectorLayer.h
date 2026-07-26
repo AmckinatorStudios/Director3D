@@ -152,6 +152,8 @@ public:
     void OpenDialog(Dialog dialog) override { m_dialogs.Open(dialog); }
     SequenceExporter& Exporter() override { return m_exporter; }
     SequenceExporter::Settings& RenderSettings() override { return m_renderSettings; }
+    RenderQueue& Queue() override { return m_queue; }
+    void StartQueue() override;
     void StartRender() override;
     std::filesystem::path& AssetsDir() override { return m_assetsDir; }
     const std::filesystem::path& SelectedAsset() const override { return m_selectedAsset; }
@@ -208,6 +210,12 @@ private:
     AudioEngine m_audio;
     bool m_audioWasPlaying = false;
     SequenceExporter::Settings m_renderSettings;
+    // Очередь заданий рендера. Пуста в обычной работе; наполняется из диалога
+    // настроек рендера кнопкой «В очередь».
+    RenderQueue m_queue;
+    // Запускает следующее задание очереди. Возвращает false, когда очередь
+    // исчерпана.
+    bool StartNextQueued();
     Camera m_camera;
 
     std::vector<int> m_selection;
