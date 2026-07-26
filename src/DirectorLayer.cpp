@@ -447,18 +447,33 @@ void DirectorLayer::BuildShowcase() {
         if (GameObject cam = m_scene->Get(camera); cam.Valid()) {
             if (CineCameraComponent* cine =
                     m_scene->Registry().try_get<CineCameraComponent>(cam.Entity())) {
-                cine->DepthOfField = true;
+                // ГЛУБИНА РЕЗКОСТИ ВЫКЛЮЧЕНА, и это осознанно.
+                //
+                // Реализация в движке — экранное размытие по кругу нерезкости, и
+                // на сцене из гладких primitive'ов без текстур оно съедает
+                // единственное, за что цепляется глаз, — чёткую кромку силуэта.
+                // В кадре с настоящей моделью и текстурами размытие фона
+                // читается как оптика; здесь оно читается как «нерезкий рендер».
+                // Демонстрационный ролик должен показывать, что инструмент даёт
+                // ЧЁТКУЮ картинку, а перевод фокуса всё равно виден по дорожке.
+                //
+                // Включить и посмотреть: D3D_SHOWCASE_DOF=1.
+                cine->DepthOfField = std::getenv("D3D_SHOWCASE_DOF") != nullptr;
                 cine->AutoFocus = false;
                 // Диафрагма — это f-число: чем больше, тем ГЛУБЖЕ резкость.
-                // f/2.2 на этих расстояниях размывало весь кадр целиком.
-                cine->Aperture = 5.6f;
+                cine->Aperture = 8.0f;
                 cine->Bloom = true;
-                cine->BloomIntensity = 0.55f;
+                cine->BloomIntensity = 0.35f;
                 cine->Vignette = true;
-                cine->VignetteAmount = 0.35f;
+                cine->VignetteAmount = 0.22f;
                 cine->ColorGrading = true;
+                // Смаз движения тоже приглушён: камера идёт по дуге весь ролик,
+                // и на каждом кадре он размазывал ровно то, что должно быть
+                // резким. Хроматическая аберрация выключена совсем — цветная
+                // кайма по краям и есть та «пиксельность» на кромках.
                 cine->MotionBlur = true;
-                cine->MotionBlurAmount = 0.20f;
+                cine->MotionBlurAmount = 0.06f;
+                cine->ChromaticAberration = false;
             }
         }
     }
