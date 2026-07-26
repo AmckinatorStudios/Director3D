@@ -207,7 +207,10 @@ void StagePanel::DrawGizmo(DirectorHost& host, ImVec2 imagePos, ImVec2 imageSize
 
     const auto op = (ImGuizmo::OPERATION)host.GizmoOp();
     float snapValues[3];
-    const float snapUnit = (op == ImGuizmo::ROTATE) ? 15.0f : (op == ImGuizmo::SCALE ? 0.1f : 0.25f);
+    // Шаг привязки перемещения — КЛЕТКА СЕТКИ. Отдельное число здесь означало
+    // бы, что объект прилипает не к тем линиям, которые видит аниматор.
+    const float cell = std::max(host.Overlays().GridConfig.CellSize, 0.001f);
+    const float snapUnit = (op == ImGuizmo::ROTATE) ? 15.0f : (op == ImGuizmo::SCALE ? 0.1f : cell);
     snapValues[0] = snapValues[1] = snapValues[2] = snapUnit;
 
     // Масштаб ImGuizmo всегда считает локально (WORLD он для scale игнорирует).

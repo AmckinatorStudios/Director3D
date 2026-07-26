@@ -5,6 +5,7 @@
 #include <cstring>
 #include <fstream>
 
+#include "sage/audio/AudioEngine.h"
 #include "sage/core/Log.h"
 
 namespace d3d {
@@ -113,18 +114,22 @@ bool AudioTrack::DecodeWav(const std::vector<unsigned char>& bytes,
 
 bool AudioTrack::Load(const std::string& path) {
     Clear();
-    std::ifstream file(path, std::ios::binary);
-    if (!file) {
-        LOG_ERROR("Audio") << "Не удалось открыть звуковой файл: " << path;
-        return false;
+    {
+        std::ifstream probe(path, std::ios::binary);
+        if (!probe) {
+            LOG_ERROR("Audio") << "Не удалось открыть звуковой файл: " << path;
+            return false;
+        }
     }
     m_path = path;
 
-    std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(file)),
-                                     std::istreambuf_iterator<char>());
+    // Разбор отдан ДВИЖКУ (AudioEngine::DecodeToMono): он берёт те же форматы,
+    // что и проигрывание — WAV, MP3, FLAC. Раньше здесь стоял собственный
+    // разбор WAV, и получалось расхождение: MP3 играл, а волны для него не
+    // было. Файл поддержан наполовину — худший вид поддержки.
     std::vector<float> mono;
     int rate = 0;
-    if (!DecodeWav(bytes, mono, rate) || mono.empty() || rate <= 0) {
+    if (!AudioEngine::DecodeToMono(path, mono, rate) || mono.empty() || rate <= 0) {
         LOG_INFO("Audio") << "Волна не построена (формат не разобран), звук всё равно доступен: " << path;
         return true; // файл есть — движок его проиграет, просто без предпросмотра
     }

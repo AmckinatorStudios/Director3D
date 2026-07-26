@@ -89,6 +89,21 @@ void MenuBarPanel::Draw(DirectorHost& host) {
         ImGui::Separator();
         ViewportOverlays& ov = host.Overlays();
         ImGui::MenuItem("Grid", "G", &ov.Grid);
+        if (ImGui::BeginMenu("Grid Extent")) {
+            using Extent = sage::render::GridSettings::Extent;
+            Extent& mode = ov.GridConfig.Mode;
+            if (ImGui::MenuItem("Infinite", nullptr, mode == Extent::Infinite)) {
+                mode = Extent::Infinite;
+            }
+            if (ImGui::MenuItem("Radius", nullptr, mode == Extent::Radius)) mode = Extent::Radius;
+            ImGui::Separator();
+            ImGui::SetNextItemWidth(140.0f);
+            ImGui::DragFloat("Радиус", &ov.GridConfig.Radius, 0.5f, 1.0f, 5000.0f, "%.1f м");
+            ImGui::SetNextItemWidth(140.0f);
+            ImGui::DragFloat("Клетка", &ov.GridConfig.CellSize, 0.01f, 0.01f, 100.0f, "%.2f м");
+            ImGui::TextDisabled("Остальное — в панели World");
+            ImGui::EndMenu();
+        }
         ImGui::MenuItem("Gizmos", nullptr, &ov.Gizmos);
         ImGui::MenuItem("Camera Frame", nullptr, &ov.CameraFrame);
         ImGui::MenuItem("Safe Area", nullptr, &ov.SafeArea);

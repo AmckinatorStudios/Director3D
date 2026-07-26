@@ -9,6 +9,7 @@
 #include "sage/render/Camera.h"
 #include "sage/render/DebugDraw.h"
 #include "sage/render/Framebuffer.h"
+#include "sage/render/GridRenderer.h"
 #include "sage/render/ParticleSystem.h"
 #include "sage/render/PostFX.h"
 #include "sage/render/ShadowMap.h"
@@ -27,6 +28,10 @@ enum class ViewPreset { Perspective, Front, Side, Top, SceneCamera };
 // Вспомогательная графика вьюпорта — переключатели рядом со списком вида.
 struct ViewportOverlays {
     bool Grid = true;
+    // Настройки сетки живут рядом с флагом её показа: это один и тот же
+    // инструмент вида. Шаг клетки заодно задаёт привязку гизмо — иначе объект
+    // прилипал бы не к тем линиям, которые видит аниматор.
+    sage::render::GridSettings GridConfig;
     bool Gizmos = true;         // каркасы камер/светов/эмиттеров
     bool CameraFrame = true;    // рамка кадра активной камеры
     bool SafeArea = true;       // безопасная зона внутри рамки
@@ -147,6 +152,7 @@ private:
     std::optional<sage::render::PostFX> m_exportPostfx;
     std::optional<sage::render::PostFX> m_stagePostfx, m_viewPostfx;
     std::optional<DebugDraw> m_debug;
+    sage::render::GridRenderer m_grid;
     std::optional<SkyRenderer> m_sky;
     std::optional<ParticleSystem> m_particles;
     std::unique_ptr<sage::rhi::Geometry> m_fullscreenTri;

@@ -1,4 +1,6 @@
 #pragma once
+#include <glm/glm.hpp>
+
 #include "anim/Binding.h"
 
 namespace d3d {
@@ -35,6 +37,19 @@ private:
     void DrawBoneSection(DirectorHost& host);
     // Раздел «Blend Shapes» — ползунки весов морф-целей с ромбами ключей.
     void DrawMorphSection(DirectorHost& host);
+    // Раздел IK внутри секции кости: цель, полюс и длина цепочки.
+    void DrawIKSection(DirectorHost& host, int entityId, int joint);
+
+    // Состояние ручки IK. Живёт в панели, а не в сцене: это ИНСТРУМЕНТ, а не
+    // свойство персонажа — цель задаётся на время правки позы и снимается
+    // ключом вместе с ней.
+    glm::vec3 m_ikTarget{0.0f};
+    glm::vec3 m_ikPole{0.0f};
+    bool m_ikUsePole = false;
+    int m_ikChainLength = 3;
+    float m_ikWeight = 1.0f;
+    int m_ikBone = -1;     // для какой кости взята цель (смена кости обнуляет)
+    bool m_ikReached = true;
 };
 
 } // namespace d3d

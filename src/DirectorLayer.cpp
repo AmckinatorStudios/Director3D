@@ -991,6 +991,94 @@ void DirectorLayer::RunBoneCheck() {
         }
     }
 
+    // --- Обратная кинематика ---
+    // Проверяем ровно тот путь, по которому идёт кнопка «Дотянуться»: цель
+    // задаётся в МИРЕ, солвер работает в пространстве модели, результат ложится
+    // в те же переопределения позы. Юнит-тесты движка проверяют сам солвер на
+    // синтетическом скелете; здесь важно другое — что перевод миру↔модели не
+    // теряется и что конец цепочки действительно приезжает в указанную точку.
+    {
+        const int end = sk->Count() - 1; // кончик щупальца — самая длинная цепочка
+
+        // Корень цепочки заданной длины: столько же шагов вверх по родителям,
+        // сколько костей в цепочке (минус сама конечная).
+        auto chainRootOf = [&](int length) {
+            int j = end;
+            for (int i = 1; i < length && sk->Joints[(size_t)j].Parent >= 0; ++i) {
+                j = sk->Joints[(size_t)j].Parent;
+            }
+            return j;
+        };
+
+        // Цель, которая ГАРАНТИРОВАННО достижима: поворачиваем текущее положение
+        // кончика вокруг корня цепочки. Расстояние до корня остаётся тем же, а
+        // раз поза его уже держит — солверу есть куда прийти. Отодвигать точку
+        // «на глазок» нельзя: у трёхзвенной цепочки вылет короткий, и цель за её
+        // пределами провалила бы проверку, ничего не сказав о самом солвере.
+        auto reachableTarget = [&](int chainRoot, const glm::vec3& tip) {
+            glm::vec3 base(0.0f);
+            BoneWorldPosition(*m_scene, id, chainRoot, base);
+            const glm::vec4 turned =
+                glm::rotate(glm::mat4(1.0f), glm::radians(25.0f), glm::vec3(0, 1, 0)) *
+                glm::vec4(tip - base, 1.0f);
+            return base + glm::vec3(turned);
+        };
+
+        glm::vec3 tip(0.0f);
+        check(BoneWorldPosition(*m_scene, id, end, tip), "мировая позиция конца цепочки читается");
+        const int root3 = chainRootOf(3);
+        glm::vec3 base3(0.0f);
+        BoneWorldPosition(*m_scene, id, root3, base3);
+        const float span = glm::length(tip - base3);
+        check(span > 0.01f, "цепочка не выродилась в точку");
+
+        const glm::vec3 target = reachableTarget(root3, tip);
+        bool reached = false;
+        check(SolveBoneIK(*m_scene, id, end, 3, target, nullptr, 1.0f, reached),
+              "IK отработал на трёхзвенной цепочке");
+        check(reached, "IK дотянулся до цели в пределах досягаемости");
+
+        glm::vec3 afterIk(0.0f);
+        BoneWorldPosition(*m_scene, id, end, afterIk);
+        const float miss = glm::length(afterIk - target);
+        LOG_INFO("BoneCheck") << "Промах IK: " << miss << " м (вылет цепочки " << span << " м)";
+        check(miss < span * 0.05f, "конец цепочки встал в цель");
+
+        // Недостижимая цель: конечность обязана вытянуться в её сторону, а не
+        // сложиться или улететь. Признак — конец стал ДАЛЬШЕ от корня.
+        const glm::vec3 far = base3 + glm::normalize(target - base3) * (span * 10.0f);
+        bool farReached = true;
+        check(SolveBoneIK(*m_scene, id, end, 3, far, nullptr, 1.0f, farReached),
+              "IK отработал на недостижимой цели");
+        check(!farReached, "недостижимая цель помечена как недостигнутая");
+        glm::vec3 stretched(0.0f);
+        BoneWorldPosition(*m_scene, id, end, stretched);
+        check(glm::length(stretched - base3) > span, "цепочка вытянулась в сторону цели");
+
+        // Длинная цепочка идёт через FABRIK — другой код солвера, тот же мост.
+        if (sk->Count() >= 5) {
+            ResetPose(id);
+            ApplyDocument(true);
+            glm::vec3 tip5(0.0f);
+            BoneWorldPosition(*m_scene, id, end, tip5);
+            const int root5 = chainRootOf(5);
+            glm::vec3 base5(0.0f);
+            BoneWorldPosition(*m_scene, id, root5, base5);
+            const glm::vec3 target5 = reachableTarget(root5, tip5);
+            bool ok5 = false;
+            check(SolveBoneIK(*m_scene, id, end, 5, target5, nullptr, 1.0f, ok5),
+                  "IK отработал на пятизвенной цепочке (FABRIK)");
+            glm::vec3 afterFabrik(0.0f);
+            BoneWorldPosition(*m_scene, id, end, afterFabrik);
+            const float miss5 = glm::length(afterFabrik - target5);
+            LOG_INFO("BoneCheck") << "Промах FABRIK: " << miss5 << " м";
+            check(miss5 < glm::length(tip5 - base5) * 0.05f,
+                  "FABRIK привёл конец цепочки к цели");
+        }
+    }
+    ResetPose(id); // IK оставил свою позу — дальше проверяем сброс с чистого листа
+    ApplyDocument(true);
+
     // --- Сброс позы ---
     // Ручная поза снимается, дорожки остаются: следующий Apply снова наложит
     // ключи. Поэтому сверяем СРАЗУ, до применения документа, — и именно с позой
@@ -1421,7 +1509,7 @@ void DirectorLayer::NewProject() {
 bool DirectorLayer::OpenProject(const fs::path& path, std::string& err) {
     std::unique_ptr<Scene> loaded;
     float playhead = 0.0f;
-    if (!ProjectFile::Load(path.string(), loaded, m_doc, playhead, err)) return false;
+    if (!ProjectFile::Load(path.string(), loaded, m_doc, playhead, err, &m_overlays)) return false;
 
     m_scene = std::move(loaded);
     m_projectPath = path;
@@ -1446,7 +1534,7 @@ bool DirectorLayer::OpenProject(const fs::path& path, std::string& err) {
 }
 
 bool DirectorLayer::SaveProject(const fs::path& path, std::string& err) {
-    if (!ProjectFile::Save(path.string(), *m_scene, m_doc, CurrentTime(), err)) return false;
+    if (!ProjectFile::Save(path.string(), *m_scene, m_doc, CurrentTime(), err, &m_overlays)) return false;
     m_projectPath = path;
     m_dirty = false;
     m_statusBar.NoteSaved();

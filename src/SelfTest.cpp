@@ -400,12 +400,55 @@ void TestProjectIO() {
 
     // --- Файл на диске ---
     const fs::path path = fs::temp_directory_path() / "director3d_selftest.d3dproj";
-    Check(ProjectFile::Save(path.string(), *scene, doc, 3.75f, err), "проект сохранился в файл");
+
+    // Настройки рабочего вида уходят в файл вместе с проектом: размер площадки
+    // — часть постановки, и открывать сцену с чужой сеткой аниматор не должен.
+    ViewportOverlays view;
+    view.Grid = true;
+    view.Thirds = true;
+    view.SafeArea = false;
+    view.GridConfig.Mode = sage::render::GridSettings::Extent::Radius;
+    view.GridConfig.Radius = 17.5f;
+    view.GridConfig.CellSize = 0.25f;
+    view.GridConfig.MajorEvery = 8;
+    view.GridConfig.ShowAxes = false;
+    view.GridConfig.Opacity = 0.6f;
+    Check(ProjectFile::Save(path.string(), *scene, doc, 3.75f, err, &view),
+          "проект сохранился в файл");
 
     std::unique_ptr<Scene> loaded;
     AnimationDocument loadedDoc;
     float playhead = 0.0f;
-    Check(ProjectFile::Load(path.string(), loaded, loadedDoc, playhead, err), "проект загрузился из файла");
+    ViewportOverlays loadedView;
+    Check(ProjectFile::Load(path.string(), loaded, loadedDoc, playhead, err, &loadedView),
+          "проект загрузился из файла");
+    Check(loadedView.GridConfig.Mode == sage::render::GridSettings::Extent::Radius,
+          "режим сетки сохранился");
+    CheckNear(loadedView.GridConfig.Radius, 17.5f, 1e-4f, "радиус сетки сохранился");
+    CheckNear(loadedView.GridConfig.CellSize, 0.25f, 1e-4f, "шаг клетки сохранился");
+    Check(loadedView.GridConfig.MajorEvery == 8, "период крупных линий сохранился");
+    Check(!loadedView.GridConfig.ShowAxes, "выключенные оси сетки сохранились");
+    CheckNear(loadedView.GridConfig.Opacity, 0.6f, 1e-4f, "прозрачность сетки сохранилась");
+    Check(loadedView.Thirds && !loadedView.SafeArea, "переключатели направляющих сохранились");
+
+    // Проект БЕЗ раздела "viewport" (старый файл или экспорт чужой программой)
+    // не должен обнулять текущие настройки вида — их просто нечем заменить.
+    {
+        std::string bareErr;
+        const fs::path bare = fs::temp_directory_path() / "director3d_selftest_bare.d3dproj";
+        Check(ProjectFile::Save(bare.string(), *scene, doc, 0.0f, bareErr),
+              "проект без настроек вида сохранился");
+        std::unique_ptr<Scene> bareScene;
+        AnimationDocument bareDoc;
+        float barePlayhead = 0.0f;
+        ViewportOverlays keep;
+        keep.GridConfig.CellSize = 3.0f;
+        Check(ProjectFile::Load(bare.string(), bareScene, bareDoc, barePlayhead, bareErr, &keep),
+              "проект без настроек вида загрузился");
+        CheckNear(keep.GridConfig.CellSize, 3.0f, 1e-4f,
+                  "старый проект не сбросил настройки сетки");
+        fs::remove(bare);
+    }
     CheckNear(playhead, 3.75f, 1e-4f, "положение головки сохранилось");
     CheckNear(loadedDoc.Fps, 30.0f, 1e-4f, "частота кадров сохранилась");
     CheckNear(loadedDoc.Duration, 12.5f, 1e-4f, "длительность сохранилась");

@@ -55,6 +55,41 @@ void RowLabel(const char* label) {
     ImGui::SameLine(kLabelWidth);
 }
 
+// Три поля вектора с цветными подписями осей — раскладка одна на весь
+// инспектор: строки трансформа, кости и цели IK должны стоять в один столбик,
+// иначе панель читается как набор разных диалогов. rightMargin — сколько места
+// оставить справа: строке с ромбом-ключом нужен столбик под него, цели IK нет.
+//
+// host нужен только строкам, которые правят СЦЕНУ: каждое поле должно само
+// открыть и закрыть шаг отмены, иначе перетаскивание мышью запишется в стек
+// сотней шагов по одному кадру. Цель IK — состояние панели, а не сцены, ей
+// отмена не нужна, поэтому host там nullptr.
+bool AxisVec3(DirectorHost* host, float* value, float speed, const char* format,
+              float rightMargin) {
+    const float avail = ImGui::GetContentRegionAvail().x - rightMargin;
+    const float fieldWidth = (avail - 2.0f * ImGui::GetStyle().ItemSpacing.x) / 3.0f;
+    static const char* kAxis[3] = {"X", "Y", "Z"};
+    static const ImU32 kAxisColor[3] = {0xFF4A4AE8, 0xFF5CC85C, 0xFFE8964A};
+
+    bool changed = false;
+    for (int i = 0; i < 3; ++i) {
+        if (i > 0) ImGui::SameLine();
+        ImGui::PushID(i);
+        const ImVec2 pos = ImGui::GetCursorScreenPos();
+        ImGui::SetNextItemWidth(fieldWidth);
+        // Отступ слева освобождает место под букву оси: она рисуется поверх
+        // поля, а не отдельной подписью, — иначе три подписи съели бы строку.
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(18, 4));
+        if (ImGui::DragFloat("##v", &value[i], speed, 0.0f, 0.0f, format)) changed = true;
+        ImGui::PopStyleVar();
+        if (host) host->TrackLastItem();
+        ImGui::GetWindowDrawList()->AddText(
+            ImVec2(pos.x + 7.0f, pos.y + ImGui::GetStyle().FramePadding.y), kAxisColor[i], kAxis[i]);
+        ImGui::PopID();
+    }
+    return changed;
+}
+
 } // namespace
 
 // ============================================================================
@@ -140,25 +175,7 @@ bool PropertiesPanel::DrawVec3Row(DirectorHost& host, const char* label, float* 
 
     // Подписи осей X/Y/Z цветные — те же цвета, что у осей гизмо и у каналов
     // в редакторе кривых.
-    const float avail = ImGui::GetContentRegionAvail().x - kKeyColumn;
-    const float fieldWidth = (avail - 2.0f * ImGui::GetStyle().ItemSpacing.x) / 3.0f;
-    static const char* kAxis[3] = {"X", "Y", "Z"};
-    static const ImU32 kAxisColor[3] = {0xFF4A4AE8, 0xFF5CC85C, 0xFFE8964A};
-
-    bool changed = false;
-    for (int i = 0; i < 3; ++i) {
-        if (i > 0) ImGui::SameLine();
-        ImGui::PushID(i);
-        const ImVec2 pos = ImGui::GetCursorScreenPos();
-        ImGui::SetNextItemWidth(fieldWidth);
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(18, 4));
-        if (ImGui::DragFloat("##v", &value[i], speed, 0.0f, 0.0f, format)) changed = true;
-        ImGui::PopStyleVar();
-        host.TrackLastItem();
-        ImGui::GetWindowDrawList()->AddText(
-            ImVec2(pos.x + 7.0f, pos.y + ImGui::GetStyle().FramePadding.y), kAxisColor[i], kAxis[i]);
-        ImGui::PopID();
-    }
+    const bool changed = AxisVec3(&host, value, speed, format, kKeyColumn);
 
     DrawKeyDiamond(host, prop, true, joint);
     ImGui::PopID();
@@ -257,6 +274,98 @@ void PropertiesPanel::DrawMorphSection(DirectorHost& host) {
     ImGui::Spacing();
 }
 
+void PropertiesPanel::DrawIKSection(DirectorHost& host, int entityId, int joint) {
+    Scene& scene = host.CurrentScene();
+    const sage::anim::Skeleton* skeleton = SkeletonOf(scene, entityId);
+    if (!skeleton) return;
+
+    // Цепочка должна набраться от выбранной кости вверх — у кости под самым
+    // корнем тянуть нечего, и предлагать IK там незачем.
+    const int maxChain = [&] {
+        int length = 0;
+        for (int j = joint; j >= 0; j = skeleton->Joints[(size_t)j].Parent) ++length;
+        return length;
+    }();
+    if (maxChain < 3) return;
+
+    ImGui::Spacing();
+    if (!ImGui::TreeNodeEx("##ik", ImGuiTreeNodeFlags_SpanAvailWidth, "Обратная кинематика")) return;
+
+    // Смена кости обнуляет цель: ручка от прошлой конечности на новой означала
+    // бы рывок в чужую точку при первом же нажатии.
+    if (m_ikBone != joint) {
+        m_ikBone = joint;
+        glm::vec3 here(0.0f);
+        if (BoneWorldPosition(scene, entityId, joint, here)) m_ikTarget = here;
+        m_ikPole = m_ikTarget + glm::vec3(0.0f, 0.0f, 1.0f);
+        m_ikChainLength = std::min(3, maxChain);
+        m_ikReached = true;
+    }
+
+    ImGui::Spacing();
+    RowLabel("Костей");
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - kKeyColumn);
+    ImGui::SliderInt("##chain", &m_ikChainLength, 3, std::min(maxChain, 12), "%d");
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Длина цепочки от выбранной кости вверх по скелету.\n"
+                          "Три кости — аналитическое решение (рука, нога).\n"
+                          "Больше — FABRIK: хвост, позвоночник, щупальце.");
+    }
+
+    ImGui::Spacing();
+    ImGui::TextUnformatted("Цель (мир)");
+    AxisVec3(nullptr, &m_ikTarget.x, 0.01f, "%.3f", kKeyColumn);
+    if (ImGui::Button("Взять от кости")) {
+        glm::vec3 here(0.0f);
+        if (BoneWorldPosition(scene, entityId, joint, here)) m_ikTarget = here;
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Поставить цель туда, где кость сейчас");
+
+    ImGui::Spacing();
+    ImGui::Checkbox("Задать полюс", &m_ikUsePole);
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Куда смотрит локоть или колено.\n"
+                          "Без полюса плоскость сгиба берётся от текущей позы.");
+    }
+    if (m_ikUsePole) AxisVec3(nullptr, &m_ikPole.x, 0.01f, "%.3f", kKeyColumn);
+
+    ImGui::Spacing();
+    RowLabel("Сила");
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - kKeyColumn);
+    ImGui::SliderFloat("##ikweight", &m_ikWeight, 0.0f, 1.0f, "%.2f");
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Смешивание с текущей позой: 0 — IK не влияет,\n"
+                          "1 — поза целиком от солвера.");
+    }
+
+    ImGui::Spacing();
+    if (ImGui::Button("Дотянуться")) {
+        host.PushUndo();
+        bool reached = false;
+        const glm::vec3* pole = m_ikUsePole ? &m_ikPole : nullptr;
+        if (SolveBoneIK(scene, entityId, joint, m_ikChainLength, m_ikTarget, pole, m_ikWeight,
+                        reached)) {
+            m_ikReached = reached;
+            host.NotifyObjectEdited(entityId);
+            host.SetStatus(reached ? "IK: цель достигнута"
+                                   : "IK: цель дальше вытянутой конечности");
+        } else {
+            host.SetStatus("IK не сработал — скелет не готов или цепочка короткая");
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Заключить позу##ik")) host.KeyWholePose(entityId);
+
+    if (!m_ikReached) {
+        ImGui::PushStyleColor(ImGuiCol_Text, Theme::Colors::Warning);
+        ImGui::TextWrapped("Цель дальше, чем достаёт конечность — она вытянута в её сторону.");
+        ImGui::PopStyleColor();
+    }
+
+    ImGui::TreePop();
+    ImGui::Spacing();
+}
+
 void PropertiesPanel::DrawBoneSection(DirectorHost& host) {
     const BoneSelection& bone = host.SelectedBone();
     if (!bone.Valid() || bone.EntityId != host.SelectedId()) return;
@@ -311,6 +420,8 @@ void PropertiesPanel::DrawBoneSection(DirectorHost& host) {
         edited = true;
     }
     if (edited) host.NotifyObjectEdited(bone.EntityId);
+
+    DrawIKSection(host, bone.EntityId, bone.Joint);
 
     ImGui::Spacing();
     if (ImGui::Button("Ключ на кость")) host.KeyBone();

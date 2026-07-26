@@ -1,5 +1,6 @@
 #include "ui/panels/WorldPanel.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <filesystem>
 
@@ -57,6 +58,71 @@ bool CheckSkyDirectory(const std::string& dir, std::string& outProblem) {
 
 void WorldPanel::Draw(DirectorHost& host) {
     ImGui::Begin("World");
+
+    // --- Сетка ---
+    // Сетка живёт в World вместе с небом и туманом: это всё «как выглядит
+    // сцена», а не свойство объекта.
+    if (SectionHeader("Grid")) {
+        ViewportOverlays& ov = host.Overlays();
+        sage::render::GridSettings& grid = ov.GridConfig;
+
+        ImGui::Spacing();
+        ImGui::Checkbox("Показывать сетку", &ov.Grid);
+
+        ImGui::BeginDisabled(!ov.Grid);
+        ImGui::Spacing();
+
+        int mode = grid.Mode == sage::render::GridSettings::Extent::Infinite ? 0 : 1;
+        ImGui::TextUnformatted("Протяжённость");
+        if (ImGui::RadioButton("Бесконечная", mode == 0)) {
+            grid.Mode = sage::render::GridSettings::Extent::Infinite;
+        }
+        ImGui::SameLine(0.0f, 16.0f);
+        if (ImGui::RadioButton("Радиус", mode == 1)) {
+            grid.Mode = sage::render::GridSettings::Extent::Radius;
+        }
+        if (grid.Mode == sage::render::GridSettings::Extent::Radius) {
+            ImGui::SetNextItemWidth(-1.0f);
+            ImGui::DragFloat("##radius", &grid.Radius, 0.5f, 1.0f, 5000.0f, "%.1f м");
+        } else {
+            ImGui::TextDisabled("Уходит за горизонт с затуханием по высоте камеры.");
+        }
+
+        ImGui::Spacing();
+        ImGui::SetNextItemWidth(-1.0f);
+        if (ImGui::DragFloat("##cell", &grid.CellSize, 0.01f, 0.01f, 100.0f, "клетка %.2f м")) {
+            grid.CellSize = std::max(grid.CellSize, 0.01f);
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Шаг клетки. Он же — шаг привязки гизмо (Snap),\n"
+                              "поэтому объект прилипает ровно к видимым линиям.");
+        }
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::SliderInt("##major", &grid.MajorEvery, 2, 20, "крупная линия каждые %d");
+
+        ImGui::Spacing();
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::DragFloat("##height", &grid.Height, 0.05f, -100.0f, 100.0f, "высота %.2f м");
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::SliderFloat("##opacity", &grid.Opacity, 0.0f, 1.0f, "прозрачность %.2f");
+
+        ImGui::Spacing();
+        ImGui::Checkbox("Выделять оси X и Z", &grid.ShowAxes);
+        ImGui::ColorEdit3("Мелкая линия", &grid.MinorColor.x, ImGuiColorEditFlags_NoInputs);
+        ImGui::SameLine();
+        ImGui::ColorEdit3("Крупная", &grid.MajorColor.x, ImGuiColorEditFlags_NoInputs);
+
+        ImGui::Spacing();
+        if (ImGui::Button("Сантиметры")) { grid.CellSize = 0.01f; grid.MajorEvery = 10; }
+        ImGui::SameLine();
+        if (ImGui::Button("Метры")) { grid.CellSize = 1.0f; grid.MajorEvery = 10; }
+        ImGui::SameLine();
+        if (ImGui::Button("Десятки")) { grid.CellSize = 10.0f; grid.MajorEvery = 10; }
+
+        ImGui::EndDisabled();
+        ImGui::Spacing();
+    }
+
 
     Scene& scene = host.CurrentScene();
     LightingEnvironment& env = scene.Lighting;

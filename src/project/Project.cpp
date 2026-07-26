@@ -327,6 +327,62 @@ void LoadDocument(AnimationDocument& doc, const json& in) {
     doc.SetNextId(maxId + 1);
 }
 
+// --- Рабочий вид -------------------------------------------------------------
+// Сетка и направляющие — часть постановки, а не личная настройка программы:
+// «клетка 0.5 м, радиус 12 м» описывает размер площадки этой сцены. Поэтому они
+// живут в проекте, а не в общих настройках приложения.
+
+json SaveViewport(const ViewportOverlays& v) {
+    const sage::render::GridSettings& g = v.GridConfig;
+    return json{
+        {"grid", v.Grid},
+        {"gizmos", v.Gizmos},
+        {"cameraFrame", v.CameraFrame},
+        {"safeArea", v.SafeArea},
+        {"thirds", v.Thirds},
+        {"outline", v.Outline},
+        {"skeleton", v.Skeleton},
+        {"gridConfig",
+         {{"mode", g.Mode == sage::render::GridSettings::Extent::Radius ? "radius" : "infinite"},
+          {"radius", g.Radius},
+          {"cellSize", g.CellSize},
+          {"majorEvery", g.MajorEvery},
+          {"height", g.Height},
+          {"showAxes", g.ShowAxes},
+          {"opacity", g.Opacity},
+          {"fadeDistance", g.FadeDistance}}},
+    };
+}
+
+void LoadViewport(ViewportOverlays& v, const json& in) {
+    v.Grid = in.value("grid", v.Grid);
+    v.Gizmos = in.value("gizmos", v.Gizmos);
+    v.CameraFrame = in.value("cameraFrame", v.CameraFrame);
+    v.SafeArea = in.value("safeArea", v.SafeArea);
+    v.Thirds = in.value("thirds", v.Thirds);
+    v.Outline = in.value("outline", v.Outline);
+    v.Skeleton = in.value("skeleton", v.Skeleton);
+
+    const json& jg = in.value("gridConfig", json::object());
+    sage::render::GridSettings& g = v.GridConfig;
+    g.Mode = jg.value("mode", std::string("infinite")) == "radius"
+                 ? sage::render::GridSettings::Extent::Radius
+                 : sage::render::GridSettings::Extent::Infinite;
+    g.Radius = jg.value("radius", g.Radius);
+    g.CellSize = jg.value("cellSize", g.CellSize);
+    g.MajorEvery = jg.value("majorEvery", g.MajorEvery);
+    g.Height = jg.value("height", g.Height);
+    g.ShowAxes = jg.value("showAxes", g.ShowAxes);
+    g.Opacity = jg.value("opacity", g.Opacity);
+    g.FadeDistance = jg.value("fadeDistance", g.FadeDistance);
+
+    // Битый файл не должен ронять рендер: нулевой шаг клетки — деление на ноль в
+    // шейдере, отрицательный радиус — пустая сетка без единой линии.
+    if (g.CellSize <= 0.0001f) g.CellSize = 1.0f;
+    if (g.MajorEvery < 2) g.MajorEvery = 10;
+    if (g.Radius <= 0.0f) g.Radius = 20.0f;
+}
+
 // Собирает целиком дерево проекта (используется и файлом, и снимком в памяти).
 json BuildProjectJson(Scene& scene, const AnimationDocument& doc, float playheadTime) {
     json root;
@@ -374,11 +430,13 @@ bool ParseProjectJson(const json& root, std::unique_ptr<Scene>& outScene,
 } // namespace
 
 bool ProjectFile::Save(const std::string& path, Scene& scene, const AnimationDocument& doc,
-                       float playheadTime, std::string& err) {
+                       float playheadTime, std::string& err, const ViewportOverlays* view) {
     try {
         std::ofstream file(path);
         if (!file) { err = "не удалось открыть файл на запись: " + path; return false; }
-        file << BuildProjectJson(scene, doc, playheadTime).dump(2);
+        json root = BuildProjectJson(scene, doc, playheadTime);
+        if (view) root["viewport"] = SaveViewport(*view);
+        file << root.dump(2);
         if (!file) { err = "ошибка записи файла: " + path; return false; }
     } catch (const std::exception& e) {
         err = e.what();
@@ -389,12 +447,14 @@ bool ProjectFile::Save(const std::string& path, Scene& scene, const AnimationDoc
 }
 
 bool ProjectFile::Load(const std::string& path, std::unique_ptr<Scene>& outScene,
-                       AnimationDocument& doc, float& outPlayheadTime, std::string& err) {
+                       AnimationDocument& doc, float& outPlayheadTime, std::string& err,
+                       ViewportOverlays* outView) {
     try {
         std::ifstream file(path);
         if (!file) { err = "файл не найден: " + path; return false; }
         json root = json::parse(file);
         if (!ParseProjectJson(root, outScene, doc, outPlayheadTime, err)) return false;
+        if (outView && root.contains("viewport")) LoadViewport(*outView, root["viewport"]);
     } catch (const std::exception& e) {
         err = e.what();
         return false;

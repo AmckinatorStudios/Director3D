@@ -402,6 +402,15 @@ void StageRenderer::RenderStage(Scene& scene, Camera& camera, const LightingEnvi
     DrawSky(env, outView, outProj);
     DrawScene(scene, env, outView, outProj, viewPos, shading);
 
+    // Сетка — ПОСЛЕ геометрии и ДО остальной служебной графики: она
+    // полупрозрачна и должна смешиваться с уже нарисованной сценой, а каркасы
+    // камер и светов должны ложиться поверх неё.
+    if (overlays.Grid) {
+        sage::render::GridSettings grid = overlays.GridConfig;
+        grid.Enabled = true;
+        m_grid.Draw(outView, outProj, viewPos, grid);
+    }
+
     // Служебная графика — в тот же буфер с тестом глубины, чтобы объекты
     // корректно заслоняли сетку.
     DrawHelpers(scene, overlays, selection, aspect);
@@ -517,9 +526,9 @@ void StageRenderer::ResetMotionHistory() {
 
 void StageRenderer::DrawHelpers(Scene& scene, const ViewportOverlays& overlays,
                                 const std::vector<int>& selection, float cameraAspect) {
-    if (overlays.Grid) {
-        m_debug->Grid(glm::vec3(0.0f), 14.0f, 1.0f, glm::vec3(0.30f, 0.32f, 0.37f));
-    }
+    // Сетка рисуется НЕ здесь: ей нужны матрицы камеры (она считает пересечение
+    // луча с плоскостью), а служебная графика работает в мировых координатах.
+    // См. DrawGrid, который вызывается из прохода вьюпорта.
     if (!overlays.Gizmos) return;
 
     auto& reg = scene.Registry();

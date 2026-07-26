@@ -8,6 +8,7 @@
 #include <glm/gtx/matrix_decompose.hpp>
 
 #include "anim/DirectorComponents.h"
+#include "sage/anim/IK.h"
 #include "sage/render/SkinnedModel.h"
 #include "sage/scene/Components.h"
 #include "sage/scene/Scene.h"
@@ -234,6 +235,61 @@ void SyncAllPoseOverrides(Scene& scene) {
         PoseComponent* pose = scene.Registry().try_get<PoseComponent>(e);
         am.Anim.SetPoseOverride(pose && !pose->Joints.empty() ? &pose->Joints : nullptr);
     }
+}
+
+bool BoneWorldPosition(Scene& scene, int entityId, int joint, glm::vec3& out) {
+    glm::mat4 world;
+    if (!BoneWorldMatrix(scene, entityId, joint, world)) return false;
+    out = glm::vec3(world[3]);
+    return true;
+}
+
+bool SolveBoneIK(Scene& scene, int entityId, int endJoint, int chainLength,
+                 const glm::vec3& targetWorld, const glm::vec3* poleWorld, float weight,
+                 bool& outReached) {
+    outReached = false;
+    AnimatedModelComponent* am = AnimOf(scene, entityId);
+    if (!am) return false;
+    const sage::anim::Skeleton& sk = am->Model->GetSkeleton();
+    const std::vector<glm::mat4>& globals = am->Anim.GlobalMatrices();
+    if ((int)globals.size() != sk.Count()) return false;
+
+    const std::vector<int> chain = sage::anim::ChainFromEnd(sk, endJoint, std::max(chainLength, 2));
+    if (chain.empty()) return false;
+
+    // Цель приходит в МИРЕ, а солвер работает в пространстве модели: персонажа
+    // могли повернуть и сдвинуть, и без этого перевода рука тянулась бы не туда.
+    GameObject obj = scene.Get(entityId);
+    const glm::mat4 toModel = glm::inverse(scene.WorldMatrix(obj.Entity()));
+    const glm::vec3 targetModel = glm::vec3(toModel * glm::vec4(targetWorld, 1.0f));
+    glm::vec3 poleModel;
+    const glm::vec3* pole = nullptr;
+    if (poleWorld) {
+        poleModel = glm::vec3(toModel * glm::vec4(*poleWorld, 1.0f));
+        pole = &poleModel;
+    }
+
+    sage::anim::IKResult result;
+    if (chain.size() == 3) {
+        // Три кости — это классические плечо-локоть-кисть: аналитическое
+        // решение точнее и не зависит от числа итераций.
+        result = sage::anim::SolveTwoBone(
+            sk, globals, sage::anim::TwoBoneChain{chain[0], chain[1], chain[2]}, targetModel, pole);
+    } else {
+        result = sage::anim::SolveChain(sk, globals, chain, targetModel);
+    }
+    if (!result.Solved) return false;
+    outReached = result.Reached;
+
+    auto& reg = scene.Registry();
+    PoseComponent& pose = reg.all_of<PoseComponent>(obj.Entity())
+                              ? reg.get<PoseComponent>(obj.Entity())
+                              : reg.emplace<PoseComponent>(obj.Entity());
+    sage::anim::ApplyIK(result, pose.Joints, sk.Count(), weight);
+
+    am->Anim.SetPoseOverride(&pose.Joints);
+    am->Anim.RefreshPose();
+    return true;
 }
 
 void ClearPose(Scene& scene, int entityId) {

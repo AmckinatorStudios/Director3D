@@ -87,6 +87,26 @@ void SyncAllPoseOverrides(Scene& scene);
 // Убирает всю ручную позу персонажа: он возвращается к чистому клипу.
 void ClearPose(Scene& scene, int entityId);
 
+// --- Обратная кинематика ----------------------------------------------------
+// Тянет цепочку из chainLength костей, заканчивающуюся костью endJoint, к точке
+// targetWorld (в МИРОВЫХ координатах — аниматор указывает точку в сцене, а не в
+// пространстве модели). Двухзвенная цепочка решается аналитически, длинная —
+// FABRIK; выбор делает сам движок по длине.
+//
+// poleWorld — куда «смотрит» колено/локоть; nullptr сохраняет плоскость текущей
+// позы. Результат ложится в те же переопределения позы, что и ручная правка,
+// поэтому его сразу можно заключить ключом.
+//
+// Возвращает false, если скелета нет или цепочка не набирается; outReached —
+// дотянулись ли до цели (цель могла оказаться дальше вытянутой конечности).
+bool SolveBoneIK(Scene& scene, int entityId, int endJoint, int chainLength,
+                 const glm::vec3& targetWorld, const glm::vec3* poleWorld, float weight,
+                 bool& outReached);
+
+// Мировая позиция кости — начальная точка для цели IK: аниматор тянет ручку
+// оттуда, где кость сейчас, а не из начала координат.
+bool BoneWorldPosition(Scene& scene, int entityId, int joint, glm::vec3& out);
+
 // --- Углы Эйлера ↔ кватернион в конвенции движка (X→Y→Z, градусы) ---
 glm::quat QuatFromEulerDegrees(const glm::vec3& degrees);
 glm::vec3 EulerDegreesFromQuat(const glm::quat& q);
