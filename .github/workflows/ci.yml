@@ -121,3 +121,50 @@ jobs:
           D3D_SMOKE_TEST=1 D3D_SMOKE_FORMAT=png \
             xvfb-run -a --server-args="-screen 0 800x600x24" ./Director3D | tee smoke_png.txt
           grep -q "Сквозная проверка пройдена" smoke_png.txt
+
+      # Готовая сборка для скачивания. Смысл — чтобы посмотреть инструмент
+      # можно было БЕЗ компиляции: скачал из вкладки Actions, распаковал,
+      # запустил. Первая сборка из исходников тянет зависимости движка и
+      # занимает минуты, и это лишний барьер для того, кто просто хочет
+      # открыть окно и потыкать.
+      #
+      # Кладём бинарник ВМЕСТЕ с каталогом assets: без него инструмент
+      # запустится, но останется без иконок и шрифта интерфейса.
+      - name: Собрать пакет для скачивания
+        working-directory: Director3D
+        run: |
+          rm -rf dist && mkdir -p dist/Director3D-linux-x64
+          cp build/Director3D dist/Director3D-linux-x64/
+          cp -r build/assets dist/Director3D-linux-x64/ 2>/dev/null || true
+          cp README.md ROADMAP.md dist/Director3D-linux-x64/
+          cat > dist/Director3D-linux-x64/ЗАПУСК.txt <<'TXT'
+          Director 3D — сборка для Linux x64
+
+          Запуск:
+              ./Director3D
+
+          Если не запускается, доставьте системные библиотеки:
+              sudo apt install libgl1 libx11-6 libxrandr2 libxinerama1 libxcursor1 libxi6
+
+          Для записи MP4 нужен ffmpeg:
+              sudo apt install ffmpeg
+          Без него доступна секвенция PNG.
+
+          Для кнопки «Обзор…» в диалогах файлов:
+              sudo apt install zenity
+          Без неё путь вводится строкой.
+
+          Снять демонстрационный ролик без окна:
+              ./Director3D --render out/demo.mp4 --showcase
+
+          Все ключи командной строки:
+              ./Director3D --help
+          TXT
+          echo "Собрано:"; ls -la dist/Director3D-linux-x64
+
+      - name: Выложить сборку
+        uses: actions/upload-artifact@v4
+        with:
+          name: Director3D-linux-x64
+          path: Director3D/dist/Director3D-linux-x64
+          retention-days: 30
