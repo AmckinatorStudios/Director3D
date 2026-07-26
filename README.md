@@ -68,7 +68,32 @@ nlohmann/json) — это единственный шаг, которому ну
 ./build/Director3D                    # новая сцена
 ./build/Director3D shot.d3dproj       # сразу открыть проект
 ./build/Director3D --self-test        # самотест ядра, без окна и OpenGL
+./build/Director3D --help             # все ключи командной строки
 ```
+
+### Пакетный рендер
+
+Ролик снимается без человека за мышью — это нужно сборочной машине, очереди из
+нескольких проектов в обычном скрипте и проверке «весь конвейер жив» в CI.
+
+```bash
+# Снять проект в готовый ролик и выйти
+./build/Director3D shot.d3dproj --render out/shot.mp4 --width 1920 --height 1080
+
+# Встроенная демо-постановка — персонаж, свет, облёт камеры с переводом фокуса
+./build/Director3D --render out/showcase.mp4 --showcase --fps 30 --samples 2
+
+# Секвенция PNG: путь без расширения .mp4 понимается как каталог
+./build/Director3D shot.d3dproj --render out/frames --start 2 --end 6
+
+# На машине без экрана и видеокарты
+xvfb-run -a ./build/Director3D --render out/shot.mp4 --showcase
+```
+
+Ключи: `--width` / `--height`, `--fps`, `--start` / `--end` (секунды, `--end 0`
+— до конца ролика), `--samples` (сглаживание накоплением), `--quality` (CRF
+H.264). Окно создаётся всегда — без контекста OpenGL рендера нет, — но на
+экране ему делать нечего, поэтому под `xvfb-run` всё работает.
 
 Для вывода в MP4 нужен **ffmpeg** в `PATH`; без него доступна секвенция PNG.
 

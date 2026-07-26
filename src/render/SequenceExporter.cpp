@@ -10,6 +10,7 @@
 #include "sage/anim/AnimationSystem.h"
 #include "sage/core/Application.h"
 #include "sage/core/Log.h"
+#include "sage/render/ParticleECS.h"
 #include "sage/render/Screenshot.h"
 #include "sage/rhi/GraphicsDevice.h"
 #include "sage/scene/Scene.h"
@@ -105,6 +106,20 @@ bool SequenceExporter::Step(Scene& scene, StageRenderer& renderer, AnimationDocu
         // этого, иначе секвенция «поплывёт» при любом пропуске.
         doc.Apply(scene, time, /*seeking=*/true);
         sage::anim::UpdateAnimators(scene, 0.0f);
+
+        // Частицы шагаем САМИ, на длительность одного кадра ролика.
+        //
+        // Всё остальное в кадре ставится по абсолютному времени, а поток частиц
+        // так поставить нельзя: это симуляция, у неё есть только «продвинуть на
+        // dt». Раньше её двигал главный цикл своим dt, и получалась ерунда —
+        // экспорт пишет FramesPerStep кадров за один кадр приложения, то есть
+        // на восемь записанных кадров приходился один шаг симуляции неизвестной
+        // длины. В ролике это выглядело как замерший или дёргающийся эмиттер, а
+        // на быстрой машине результат отличался от результата на медленной.
+        //
+        // Шаг ровно 1/fps делает поток и правильным по скорости, и
+        // воспроизводимым: тот же проект даёт тот же ролик.
+        sage::fx::UpdateEmitters(scene, renderer.Particles(), 1.0f / m_fps);
 
         LightingEnvironment env = CollectVisibleLighting(scene);
         renderer.RenderShadow(scene, env);

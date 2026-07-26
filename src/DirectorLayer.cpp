@@ -69,8 +69,8 @@ float RayBox(const glm::vec3& ro, const glm::vec3& rd, const glm::vec3& bmin, co
 
 } // namespace
 
-DirectorLayer::DirectorLayer(std::string startupProject)
-    : sage::Layer("Director3D"), m_startupProject(std::move(startupProject)) {}
+DirectorLayer::DirectorLayer(std::string startupProject, RenderJob job)
+    : sage::Layer("Director3D"), m_startupProject(std::move(startupProject)), m_job(std::move(job)) {}
 DirectorLayer::~DirectorLayer() = default;
 
 // ============================================================================
@@ -147,6 +147,12 @@ void DirectorLayer::OnAttach() {
         if (std::getenv("D3D_CHARACTER_KEYS")) m_pendingBoneKeys = true;
     }
     if (std::getenv("D3D_SMOKE_TEST")) StartSmokeTest();
+    // Пакетный рендер запускается ПОСЛЕДНИМ: к этому моменту проект открыт (или
+    // построена демо-постановка), и снимать уже есть что.
+    if (m_job.Active) {
+        if (m_job.Showcase) BuildShowcase();
+        StartRenderJob();
+    }
     if (std::getenv("D3D_BONE_TEST")) {
         // Персонаж создаётся тем же вызовом, что и по кнопке Create > Character,
         // а модель грузится лениво — отсюда ожидание в кадрах.
@@ -225,6 +231,245 @@ void DirectorLayer::BuildDefaultScene() {
     m_undo.Clear();  // стартовая сцена — это НЕ правка пользователя
     m_dirty = false;
     SetCurrentTime(0.0f);
+}
+
+void DirectorLayer::BuildShowcase() {
+    // Постановка для готового ролика. От BuildDemoAnimation отличается задачей:
+    // та обязана рендериться мгновенно (её гоняет сквозная проверка в CI), эта
+    // должна ПОКАЗЫВАТЬ — движение камеры, перевод фокуса, скелетный клип,
+    // ручную позу поверх него, блендшейпы, свет и оптику камеры одновременно.
+    //
+    // Собирается ровно теми же вызовами, что доступны из интерфейса: дорожка +
+    // ключи. Отдельного «режима демонстрации» в рендере нет — если ролик
+    // получился, значит работает и ручная анимация.
+    m_doc.ClearContent();
+    m_doc.Name = "Director3D_Showcase";
+    m_doc.Fps = 30.0f;
+    m_doc.Duration = 10.0f;
+
+    const int camera = m_activeCameraId;
+    const int ground = m_scene->FindByName("Ground").Valid() ? m_scene->FindByName("Ground").Id() : -1;
+    const int cube = m_scene->FindByName("Object").Valid() ? m_scene->FindByName("Object").Id() : -1;
+    const int keyLight = m_scene->FindByName("Key_Light").Valid() ? m_scene->FindByName("Key_Light").Id() : -1;
+
+    // Сетка с радиусом: у постановки есть площадка, и её край в кадре читается
+    // как граница сцены, а не как обрыв мира.
+    m_overlays.GridConfig.Mode = sage::render::GridSettings::Extent::Radius;
+    m_overlays.GridConfig.Radius = 14.0f;
+    m_overlays.GridConfig.CellSize = 1.0f;
+
+    m_scene->Lighting.Sun.Direction = glm::normalize(glm::vec3(-0.5f, -0.85f, -0.4f));
+    m_scene->Lighting.Sun.Intensity = 1.35f;
+    m_scene->Lighting.Sun.Color = {1.0f, 0.95f, 0.86f};
+    m_scene->Lighting.SkyColor = {0.34f, 0.44f, 0.62f};
+    m_scene->Lighting.GroundColor = {0.16f, 0.14f, 0.13f};
+    m_scene->Lighting.AmbientStrength = 0.40f;
+    // Туман — не «атмосферность ради атмосферности»: на плоском полу без него
+    // нет ни одного признака глубины, и дальний реквизит читается как ближний
+    // того же размера. Начало за площадкой, чтобы сама постановка осталась
+    // чистой, а уходил в цвет неба — иначе горизонт получается склейкой.
+    m_scene->Lighting.Fog.Enabled = true;
+    m_scene->Lighting.Fog.Color = {0.62f, 0.70f, 0.80f};
+    m_scene->Lighting.Fog.Start = 16.0f;
+    m_scene->Lighting.Fog.End = 62.0f;
+
+    if (ground >= 0) {
+        GameObject g = m_scene->Get(ground);
+        g.GetTransform().Scale = {70.0f, 1.0f, 70.0f};
+        g.Renderer().Color = {0.28f, 0.29f, 0.32f};
+    }
+
+    // --- Персонаж: клип + ручная поза поверх него -----------------------------
+    const int hero = Create(CreateKind::Character);
+    RenameObject(hero, "Hero");
+    if (GameObject h = m_scene->Get(hero); h.Valid()) {
+        h.GetTransform().Position = {0.0f, 0.0f, 0.0f};
+        h.GetTransform().Scale = {1.6f, 1.6f, 1.6f};
+    }
+
+    // Дорожка клипов: Wave переходит в Curl кросс-фейдом. Именно это отличает
+    // монтаж анимации от «включить один клип на весь ролик».
+    ClipTrack& clips = m_doc.EnsureClipTrack(hero);
+    clips.Blocks.push_back(ClipBlock{"Wave", 0, 0.0f, 5.5f, 1.0f, 0.0f, true});
+    clips.Blocks.push_back(ClipBlock{"Curl", 1, 5.0f, 5.0f, 0.9f, 0.8f, true});
+
+    // Блендшейп: форма меняется поверх скелета, а не вместо него.
+    Track& morph = m_doc.EnsureTrack(hero, Property::MorphWeight, 0);
+    morph.Channels[0].SetKey(1.0f, 0.0f, Interp::EaseInOut);
+    morph.Channels[0].SetKey(3.5f, 1.0f, Interp::EaseInOut);
+    morph.Channels[0].SetKey(6.0f, 0.0f, Interp::EaseInOut);
+
+    // --- Реквизит: три объекта разной высоты ----------------------------------
+    if (cube >= 0) {
+        GameObject c = m_scene->Get(cube);
+        c.GetTransform().Position = {-3.9f, 0.5f, 1.6f};
+        c.Renderer().Color = {0.82f, 0.45f, 0.20f};
+        Track& spin = m_doc.EnsureTrack(cube, Property::Rotation);
+        spin.Channels[1].SetKey(0.0f, 0.0f, Interp::Linear);
+        spin.Channels[1].SetKey(10.0f, 360.0f, Interp::Linear);
+        Track& hop = m_doc.EnsureTrack(cube, Property::Position);
+        hop.Channels[1].SetKey(0.0f, 0.5f, Interp::EaseOut);
+        hop.Channels[1].SetKey(1.2f, 2.1f, Interp::EaseInOut);
+        hop.Channels[1].SetKey(2.4f, 0.5f, Interp::EaseIn);
+        hop.Channels[1].SetKey(3.6f, 1.7f, Interp::EaseInOut);
+        hop.Channels[1].SetKey(4.8f, 0.5f, Interp::EaseIn);
+        hop.Channels[1].SetKey(7.0f, 2.4f, Interp::EaseInOut);
+        hop.Channels[1].SetKey(9.2f, 0.5f, Interp::EaseIn);
+    }
+
+    const int pillar = Create(CreateKind::Cylinder);
+    RenameObject(pillar, "Pillar");
+    if (GameObject p = m_scene->Get(pillar); p.Valid()) {
+        p.GetTransform().Position = {3.6f, 1.3f, -1.6f};
+        p.GetTransform().Scale = {0.5f, 2.6f, 0.5f};
+        p.Renderer().Color = {0.76f, 0.76f, 0.80f};
+    }
+
+    const int orb = Create(CreateKind::Sphere);
+    RenameObject(orb, "Orb");
+    if (GameObject o = m_scene->Get(orb); o.Valid()) {
+        o.GetTransform().Position = {2.4f, 0.9f, 3.2f};
+        o.GetTransform().Scale = {0.9f, 0.9f, 0.9f};
+        o.Renderer().Color = {0.24f, 0.52f, 0.86f};
+    }
+    // Цвет анимируется наравне с геометрией — это отдельная дорожка свойства.
+    // Все три канала ключуются независимо — иначе цвет уезжает в серое:
+    // анимировать только красный и синий при неподвижном зелёном значит вести
+    // цвет через середину куба RGB, а не по дуге между двумя насыщенными.
+    Track& orbColor = m_doc.EnsureTrack(orb, Property::Color);
+    orbColor.Channels[0].SetKey(0.0f, 0.20f); orbColor.Channels[0].SetKey(5.0f, 0.92f);
+    orbColor.Channels[0].SetKey(10.0f, 0.20f);
+    orbColor.Channels[1].SetKey(0.0f, 0.52f); orbColor.Channels[1].SetKey(5.0f, 0.30f);
+    orbColor.Channels[1].SetKey(10.0f, 0.52f);
+    orbColor.Channels[2].SetKey(0.0f, 0.90f); orbColor.Channels[2].SetKey(5.0f, 0.22f);
+    orbColor.Channels[2].SetKey(10.0f, 0.90f);
+
+    // Заполняющий свет с другой стороны: одним источником объект получает
+    // чёрную теневую сторону, и форма в ней теряется. Это стандартная схема
+    // «ключ + заполнение», ради неё в инструменте и есть заготовка света.
+    const int fill = Create(CreateKind::PointLight);
+    RenameObject(fill, "Fill_Light");
+    if (GameObject f = m_scene->Get(fill); f.Valid()) {
+        f.GetTransform().Position = {-4.5f, 3.2f, 3.0f};
+        if (LightComponent* lc = m_scene->Registry().try_get<LightComponent>(f.Entity())) {
+            lc->Color = {0.55f, 0.68f, 1.0f};
+            lc->Intensity = 2.2f;
+            lc->Range = 18.0f;
+        }
+    }
+
+    // Частицы — ещё одна подсистема движка, которая должна попасть в кадр:
+    // в отличие от геометрии они живут своим временем и проверяют, что экспорт
+    // ставит время точно (иначе поток частиц дёргался бы между кадрами).
+    const int sparks = Create(CreateKind::ParticleEffect);
+    RenameObject(sparks, "Sparks");
+    if (GameObject sp = m_scene->Get(sparks); sp.Valid()) {
+        sp.GetTransform().Position = {1.5f, 0.7f, 2.4f};
+        if (ParticleEmitterComponent* pe =
+                m_scene->Registry().try_get<ParticleEmitterComponent>(sp.Entity())) {
+            // Дефолты эмиттера рассчитаны на игру, где камера в двух метрах: с
+            // десяти метров частица размером 0.1 м — это пара пикселей, то есть
+            // ничего. Для кадра нужны и крупнее, и живут дольше.
+            ParticleEmitterConfig& c = pe->Config;
+            c.DirectionMin = {-0.7f, 0.5f, -0.7f};
+            c.DirectionMax = {0.7f, 1.5f, 0.7f};
+            c.SpeedMin = 0.6f;
+            c.SpeedMax = 1.4f;
+            c.Gravity = 0.25f;          // вверх: искры всплывают, а не падают
+            c.LifetimeMin = 1.6f;
+            c.LifetimeMax = 2.6f;
+            c.StartSizeMin = 0.14f;
+            c.StartSizeMax = 0.26f;
+            c.EndSizeMin = 0.0f;
+            c.EndSizeMax = 0.03f;
+            c.StartColor = {1.0f, 0.82f, 0.42f, 0.95f};
+            c.EndColor = {1.0f, 0.35f, 0.10f, 0.0f};
+            c.EmissionRate = 38.0f;
+        }
+    }
+
+    // --- Свет: пульсация ключевого источника ----------------------------------
+    if (keyLight >= 0) {
+        Track& intensity = m_doc.EnsureTrack(keyLight, Property::LightIntensity);
+        intensity.Channels[0].SetKey(0.0f, 1.6f, Interp::Smooth);
+        intensity.Channels[0].SetKey(4.0f, 3.4f, Interp::Smooth);
+        intensity.Channels[0].SetKey(7.0f, 1.8f, Interp::Smooth);
+        intensity.Channels[0].SetKey(10.0f, 2.6f, Interp::Smooth);
+    }
+
+    // --- Камера: облёт с переводом фокуса --------------------------------------
+    if (camera >= 0) {
+        if (GameObject cam = m_scene->Get(camera); cam.Valid()) {
+            cam.GetTransform().Position = {6.5f, 3.0f, 7.5f};
+        }
+        // Дуга вокруг персонажа: ключи по X и Z ставятся независимо, поэтому
+        // траектория — не окружность из формулы, а то, что нарисовал аниматор.
+        Track& camPos = m_doc.EnsureTrack(camera, Property::Position);
+        camPos.Channels[0].SetKey(0.0f, 7.2f, Interp::EaseInOut);
+        camPos.Channels[0].SetKey(5.0f, 0.0f, Interp::Smooth);
+        camPos.Channels[0].SetKey(10.0f, -6.4f, Interp::EaseInOut);
+        camPos.Channels[1].SetKey(0.0f, 3.4f, Interp::EaseInOut);
+        camPos.Channels[1].SetKey(5.0f, 2.6f, Interp::EaseInOut);
+        camPos.Channels[1].SetKey(10.0f, 3.0f, Interp::EaseInOut);
+        camPos.Channels[2].SetKey(0.0f, 7.0f, Interp::EaseInOut);
+        camPos.Channels[2].SetKey(5.0f, 8.6f, Interp::Smooth);
+        camPos.Channels[2].SetKey(10.0f, 6.2f, Interp::EaseInOut);
+
+        Track& camRot = m_doc.EnsureTrack(camera, Property::Rotation);
+        camRot.Channels[0].SetKey(0.0f, -12.0f, Interp::EaseInOut);
+        camRot.Channels[0].SetKey(5.0f, -8.0f, Interp::EaseInOut);
+        camRot.Channels[0].SetKey(10.0f, -10.0f, Interp::EaseInOut);
+        camRot.Channels[1].SetKey(0.0f, 42.0f, Interp::EaseInOut);
+        camRot.Channels[1].SetKey(5.0f, 0.0f, Interp::Smooth);
+        camRot.Channels[1].SetKey(10.0f, -40.0f, Interp::EaseInOut);
+
+        Track& fov = m_doc.EnsureTrack(camera, Property::CameraFov);
+        fov.Channels[0].SetKey(0.0f, 52.0f, Interp::EaseInOut);
+        fov.Channels[0].SetKey(5.0f, 38.0f, Interp::EaseInOut);
+        fov.Channels[0].SetKey(10.0f, 46.0f, Interp::EaseInOut);
+
+        // Перевод фокуса: сначала резок реквизит на переднем плане, потом фокус
+        // приходит на персонажа. Ради этого глубина резкости и делалась
+        // анимируемой — статичная камера показала бы её как простое размытие.
+        //
+        // Числа не «на глаз»: это РАССТОЯНИЯ до того, что должно быть резким в
+        // этот момент, посчитанные от ключей позиции камеры. Кадр с фокусом
+        // мимо всей геометрии выглядит не как малая глубина резкости, а как
+        // испорченный рендер — что и получилось с первого раза.
+        Track& focus = m_doc.EnsureTrack(camera, Property::CameraFocusDistance);
+        focus.Channels[0].SetKey(0.0f, 7.6f, Interp::EaseInOut);   // куб на переднем плане
+        focus.Channels[0].SetKey(2.5f, 10.4f, Interp::EaseInOut);  // фокус уходит на персонажа
+        focus.Channels[0].SetKey(5.5f, 8.8f, Interp::EaseInOut);   // камера подошла ближе
+        focus.Channels[0].SetKey(10.0f, 9.4f, Interp::EaseInOut);
+
+        // Оптика камеры включается явно: без этого дорожки фокуса и диафрагмы
+        // были бы «красивыми кривыми ни о чём».
+        if (GameObject cam = m_scene->Get(camera); cam.Valid()) {
+            if (CineCameraComponent* cine =
+                    m_scene->Registry().try_get<CineCameraComponent>(cam.Entity())) {
+                cine->DepthOfField = true;
+                cine->AutoFocus = false;
+                // Диафрагма — это f-число: чем больше, тем ГЛУБЖЕ резкость.
+                // f/2.2 на этих расстояниях размывало весь кадр целиком.
+                cine->Aperture = 5.6f;
+                cine->Bloom = true;
+                cine->BloomIntensity = 0.55f;
+                cine->Vignette = true;
+                cine->VignetteAmount = 0.35f;
+                cine->ColorGrading = true;
+                cine->MotionBlur = true;
+                cine->MotionBlurAmount = 0.20f;
+            }
+        }
+    }
+
+    m_doc.Markers.push_back(Marker{"Смена клипа", 5.0f, 0xFF3FC8E8u});
+    m_selection = {hero};
+    m_undo.Clear();
+    SetCurrentTime(0.0f);
+    LOG_INFO("Render") << "Постановка собрана: дорожек " << m_doc.Tracks.size()
+                       << ", дорожек клипов " << m_doc.ClipTracks.size()
+                       << ", длительность " << m_doc.Duration << " c";
 }
 
 void DirectorLayer::BuildDemoAnimation() {
@@ -311,6 +556,68 @@ void DirectorLayer::BuildDemoAnimation() {
     m_undo.Clear();
     m_dirty = false;
     SetCurrentTime(0.0f);
+}
+
+void DirectorLayer::StartRenderJob() {
+    m_simpleMode = false;
+
+    const fs::path out(m_job.Output);
+    const bool mp4 = out.extension() == ".mp4";
+    if (mp4 && !VideoWriter::FfmpegAvailable()) {
+        LOG_ERROR("Render") << "Для .mp4 нужен ffmpeg в PATH. Укажите каталог вместо файла — "
+                               "получится секвенция PNG.";
+        sage::Application::Get().Close();
+        return;
+    }
+
+    m_renderSettings.OutputFormat = mp4 ? SequenceExporter::Format::Mp4
+                                        : SequenceExporter::Format::PngSequence;
+    // У ролика имя задаёт файл, у секвенции — каталог: имена кадров внутри него
+    // складываются из BaseName и номера.
+    m_renderSettings.OutputDir = mp4 ? out.parent_path().string() : out.string();
+    if (m_renderSettings.OutputDir.empty()) m_renderSettings.OutputDir = ".";
+    m_renderSettings.BaseName = mp4 ? out.stem().string() : "frame";
+    m_renderSettings.Width = m_job.Width;
+    m_renderSettings.Height = m_job.Height;
+    m_renderSettings.Samples = std::max(1, m_job.Samples);
+    m_renderSettings.Quality = m_job.Quality;
+    m_renderSettings.StartTime = m_job.StartTime;
+    m_renderSettings.EndTime = m_job.EndTime;
+    m_renderSettings.IncludeAudio = m_doc.Audio.Loaded();
+    // Пакетному рендеру некому показывать прогресс, и растягивать его по кадрам
+    // приложения незачем: пишем помногу за раз.
+    m_renderSettings.FramesPerStep = 8;
+    if (m_job.Fps > 0.0f) m_doc.Fps = m_job.Fps;
+
+    StartRender();
+    if (!m_exporter.Active()) {
+        LOG_ERROR("Render") << "Рендер не запустился: " << m_status;
+        sage::Application::Get().Close();
+        return;
+    }
+    m_jobStarted = true;
+    LOG_INFO("Render") << "Пакетный рендер: " << m_exporter.TotalFrames() << " кадр(ов) "
+                       << m_job.Width << "x" << m_job.Height << " при " << m_doc.Fps
+                       << " fps, сглаживание x" << m_renderSettings.Samples << " -> "
+                       << m_job.Output;
+}
+
+void DirectorLayer::FinishRenderJob() {
+    std::error_code ec;
+    if (m_exporter.Failed()) {
+        LOG_ERROR("Render") << "Рендер провален: " << m_exporter.Error();
+    } else if (m_renderSettings.OutputFormat == SequenceExporter::Format::Mp4) {
+        const uintmax_t size = fs::file_size(m_exporter.ResultPath(), ec);
+        if (ec || size == 0) {
+            LOG_ERROR("Render") << "Файл ролика пуст или не создан: " << m_exporter.ResultPath();
+        } else {
+            LOG_INFO("Render") << "Готово: " << m_exporter.ResultPath() << " ("
+                               << (size / 1024) << " КБ)";
+        }
+    } else {
+        LOG_INFO("Render") << "Готово: секвенция в " << m_renderSettings.OutputDir;
+    }
+    sage::Application::Get().Close();
 }
 
 void DirectorLayer::StartSmokeTest() {
@@ -473,6 +780,7 @@ void DirectorLayer::OnUpdate(float dt) {
             m_playback.SetTime(m_timeBeforeRender, m_doc.Duration);
             ApplyDocument(true);
             if (m_smokeTest) FinishSmokeTest();
+            if (m_jobStarted) { m_jobStarted = false; FinishRenderJob(); }
         }
         return;
     }
