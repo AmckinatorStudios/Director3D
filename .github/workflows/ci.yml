@@ -1,0 +1,178 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# Director 3D собирается только вместе с движком, а движок лежит в ДРУГОМ
+# репозитории. Токен раннера по умолчанию (GITHUB_TOKEN) выдаётся на текущий
+# репозиторий и к соседнему доступа не имеет — поэтому чекаут движка берёт
+# секрет SAGE_ENGINE_TOKEN, если он заведён (PAT или токен GitHub App с правом
+# чтения репозитория движка). Если движок публичный, хватит и GITHUB_TOKEN,
+# и секрет не нужен.
+env:
+  SAGE_ENGINE_REPO: AmckinatorStudios/SAGE-Engine
+
+jobs:
+  build-and-test:
+    name: Сборка + проверки (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Director 3D
+        uses: actions/checkout@v4
+        with:
+          path: Director3D
+
+      # Движок и инструмент разрабатываются ПАРНЫМИ ветками: правка API движка
+      # и её использование должны проверяться вместе, поэтому сначала пробуем
+      # ветку с тем же именем.
+      #
+      # На pull_request github.ref_name — это "N/merge", такой ветки в движке
+      # нет; исходное имя ветки PR лежит в github.head_ref.
+      - name: Checkout SAGE Engine (парная ветка)
+        id: engine_paired
+        uses: actions/checkout@v4
+        continue-on-error: true
+        with:
+          repository: ${{ env.SAGE_ENGINE_REPO }}
+          ref: ${{ github.head_ref || github.ref_name }}
+          path: SAGE-Engine
+          token: ${{ secrets.SAGE_ENGINE_TOKEN || secrets.GITHUB_TOKEN }}
+
+      # Парной ветки может не быть — правка только в инструменте. Тогда берём
+      # ветку движка по умолчанию.
+      - name: Checkout SAGE Engine (ветка по умолчанию)
+        if: steps.engine_paired.outcome != 'success'
+        uses: actions/checkout@v4
+        continue-on-error: true
+        with:
+          repository: ${{ env.SAGE_ENGINE_REPO }}
+          path: SAGE-Engine
+          token: ${{ secrets.SAGE_ENGINE_TOKEN || secrets.GITHUB_TOKEN }}
+
+      # Отдельный шаг с внятной причиной. Без него сборка падала бы ниже
+      # невнятной ошибкой FetchContent («could not read Username for
+      # https://github.com»), по которой не видно, что дело в правах доступа.
+      - name: Проверка, что движок на месте
+        run: |
+          if [ ! -f SAGE-Engine/engine/CMakeLists.txt ]; then
+            echo "::error::Не удалось получить ${SAGE_ENGINE_REPO}."
+            echo "::error::Если репозиторий движка приватный, заведите секрет SAGE_ENGINE_TOKEN"
+            echo "::error::(PAT или токен GitHub App с правом чтения ${SAGE_ENGINE_REPO})"
+            echo "::error::в Settings > Secrets and variables > Actions репозитория Director3D."
+            exit 1
+          fi
+          echo "Движок: $(git -C SAGE-Engine rev-parse --short HEAD)" \
+               "($(git -C SAGE-Engine rev-parse --abbrev-ref HEAD))"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake g++ ninja-build libx11-dev libxrandr-dev libxinerama-dev \
+            libxcursor-dev libxi-dev libgl1-mesa-dev xvfb ffmpeg
+
+      # Путь к движку задаём ЯВНО: полагаться в CI на поиск по соседним
+      # каталогам незачем, а при перекладке раскладки ошибка была бы неочевидной.
+      - name: Configure
+        working-directory: Director3D
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DSAGE_ENGINE_DIR="${GITHUB_WORKSPACE}/SAGE-Engine"
+
+      - name: Build
+        working-directory: Director3D
+        run: cmake --build build -j"$(nproc)"
+
+      # Полноту перевода можно посчитать только по исходникам: ключ равен самой
+      # русской строке, и полного их списка во время работы не существует.
+      # Проверка стоит до тестов, потому что чинится она правкой словаря, а не
+      # кода, и знать о ней лучше сразу.
+      - name: Localization coverage
+        working-directory: Director3D
+        run: python3 scripts/check_i18n.py
+
+      # Ядро анимации (кривые/дорожки/документ/undo/проект/WAV) — без окна и GL.
+      - name: Self-test (animation core)
+        working-directory: Director3D
+        run: ./build/Director3D --self-test
+
+      # Сквозная проверка на живом GPU (программный OpenGL под xvfb):
+      # демо-анимация -> рендер -> сверка результата. Гоняем ОБА пути вывода:
+      # ролик MP4 (основной) и секвенцию PNG (запасной, работает без ffmpeg).
+      - name: Headless smoke test (MP4)
+        working-directory: Director3D/build
+        run: |
+          D3D_WINDOW_WIDTH=800 D3D_WINDOW_HEIGHT=600 \
+          D3D_SMOKE_TEST=1 D3D_SMOKE_FORMAT=mp4 \
+            xvfb-run -a --server-args="-screen 0 800x600x24" ./Director3D | tee smoke_mp4.txt
+          grep -q "Сквозная проверка пройдена" smoke_mp4.txt
+          # Файл должен быть не просто создан, а читаться как видео: оборванный
+          # кодировщик оставляет мусор, который grep по логу не поймает.
+          ffprobe -v error -select_streams v:0 -show_entries stream=codec_name,nb_frames \
+                  -of default=noprint_wrappers=1 smoke_render/smoke.mp4
+
+      # Ручная анимация костей: скелет приезжает вместе с моделью, а она требует
+      # графического контекста — headless-самотест сюда не достаёт.
+      - name: Headless bone animation check
+        working-directory: Director3D/build
+        run: |
+          D3D_WINDOW_WIDTH=640 D3D_WINDOW_HEIGHT=480 D3D_BONE_TEST=1 \
+            xvfb-run -a --server-args="-screen 0 640x480x24" ./Director3D | tee bones.txt
+          grep -q "Проверка костей ПРОЙДЕНА" bones.txt
+
+      - name: Headless smoke test (PNG sequence)
+        working-directory: Director3D/build
+        run: |
+          rm -rf smoke_render
+          D3D_WINDOW_WIDTH=800 D3D_WINDOW_HEIGHT=600 \
+          D3D_SMOKE_TEST=1 D3D_SMOKE_FORMAT=png \
+            xvfb-run -a --server-args="-screen 0 800x600x24" ./Director3D | tee smoke_png.txt
+          grep -q "Сквозная проверка пройдена" smoke_png.txt
+
+      # Готовая сборка для скачивания. Смысл — чтобы посмотреть инструмент
+      # можно было БЕЗ компиляции: скачал из вкладки Actions, распаковал,
+      # запустил. Первая сборка из исходников тянет зависимости движка и
+      # занимает минуты, и это лишний барьер для того, кто просто хочет
+      # открыть окно и потыкать.
+      #
+      # Кладём бинарник ВМЕСТЕ с каталогом assets: без него инструмент
+      # запустится, но останется без иконок и шрифта интерфейса.
+      - name: Собрать пакет для скачивания
+        working-directory: Director3D
+        run: |
+          rm -rf dist && mkdir -p dist/Director3D-linux-x64
+          cp build/Director3D dist/Director3D-linux-x64/
+          cp -r build/assets dist/Director3D-linux-x64/ 2>/dev/null || true
+          cp README.md ROADMAP.md dist/Director3D-linux-x64/
+          cat > dist/Director3D-linux-x64/ЗАПУСК.txt <<'TXT'
+          Director 3D — сборка для Linux x64
+
+          Запуск:
+              ./Director3D
+
+          Если не запускается, доставьте системные библиотеки:
+              sudo apt install libgl1 libx11-6 libxrandr2 libxinerama1 libxcursor1 libxi6
+
+          Для записи MP4 нужен ffmpeg:
+              sudo apt install ffmpeg
+          Без него доступна секвенция PNG.
+
+          Для кнопки «Обзор…» в диалогах файлов:
+              sudo apt install zenity
+          Без неё путь вводится строкой.
+
+          Снять демонстрационный ролик без окна:
+              ./Director3D --render out/demo.mp4 --showcase
+
+          Все ключи командной строки:
+              ./Director3D --help
+          TXT
+          echo "Собрано:"; ls -la dist/Director3D-linux-x64
+
+      - name: Выложить сборку
+        uses: actions/upload-artifact@v4
+        with:
+          name: Director3D-linux-x64
+          path: Director3D/dist/Director3D-linux-x64
+          retention-days: 30
