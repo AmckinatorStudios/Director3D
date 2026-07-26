@@ -958,6 +958,109 @@ void TimelinePanel::DrawDopeTab(DirectorHost& host, const Layout& l) {
     }
 }
 
+// Всё, что относится к чтению графика, — в одном меню. Тремя отдельными
+// элементами панель переполнялась, и подписи обрезались на середине слова.
+void TimelinePanel::DrawGraphMenu(DirectorHost& host) {
+    int hidden = 0;
+    for (const Track& t : host.Document().Tracks) {
+        if (t.TargetId != host.SelectedId()) continue;
+        for (int c = 0; c < t.ChannelCount(); ++c) {
+            if (IsChannelHidden(t.Id, c)) ++hidden;
+        }
+    }
+    char label[64];
+    if (hidden > 0) std::snprintf(label, sizeof(label), "Кривые (скрыто %d)", hidden);
+    else std::snprintf(label, sizeof(label), "Кривые");
+
+    if (!ImGui::BeginMenu(label)) return;
+
+    ImGui::MenuItem("Автомасштаб", nullptr, &m_graphAutoFit);
+    if (ImGui::MenuItem("Нормализовать", nullptr, &m_graphNormalize) && m_graphNormalize) {
+        m_graphAutoFit = false; // общий масштаб в этом режиме ни при чём
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(
+            "Растянуть каждую кривую на её собственный размах.\n"
+            "Нужно, когда у объекта ключуются величины разных единиц:\n"
+            "поворот в 720° и позиция в 2 м на общей шкале означают,\n"
+            "что позиция становится плоской линией у нуля.");
+    }
+    ImGui::Separator();
+    DrawGraphChannelFilter(host);
+    ImGui::EndMenu();
+}
+
+// Список кривых выбранного объекта с галками видимости.
+//
+// Скрытие — про ЧТЕНИЕ графика, а не про анимацию: скрытая кривая продолжает
+// применяться к сцене. Для «не применять» есть заглушка дорожки, и путать эти
+// две вещи нельзя — иначе спрятанный на время канал молча перестал бы работать.
+void TimelinePanel::DrawGraphChannelFilter(DirectorHost& host) {
+    AnimationDocument& doc = host.Document();
+    const int selectedId = host.SelectedId();
+
+    int hidden = 0;
+    for (const Track& t : doc.Tracks) {
+        if (t.TargetId != selectedId) continue;
+        for (int c = 0; c < t.ChannelCount(); ++c) {
+            if (IsChannelHidden(t.Id, c)) ++hidden;
+        }
+    }
+
+    (void)hidden;
+    bool any = false;
+    for (Track& track : doc.Tracks) {
+        if (track.TargetId != selectedId) continue;
+        const PropertyInfo& info = PropertyInfoOf(track.Prop);
+        for (int c = 0; c < track.ChannelCount(); ++c) {
+            if (track.Channels[(size_t)c].Empty()) continue; // пустой канал и так не рисуется
+            any = true;
+            ImGui::PushID(track.Id * 100 + c);
+            bool visible = !IsChannelHidden(track.Id, c);
+            char name[96];
+            const char* channelName = info.ChannelLabels[c];
+            if (channelName && channelName[0]) {
+                std::snprintf(name, sizeof(name), "%s · %s", info.Label, channelName);
+            } else {
+                std::snprintf(name, sizeof(name), "%s", info.Label);
+            }
+            // Цветная метка перед именем — те же цвета, что у самих кривых:
+            // иначе в списке из девяти строк непонятно, какая из них какая.
+            const ImVec2 pos = ImGui::GetCursorScreenPos();
+            ImGui::GetWindowDrawList()->AddRectFilled(
+                ImVec2(pos.x, pos.y + 4.0f), ImVec2(pos.x + 8.0f, pos.y + 14.0f),
+                info.ChannelColors[c], 2.0f);
+            ImGui::Dummy(ImVec2(12.0f, 1.0f));
+            ImGui::SameLine();
+            if (ImGui::MenuItem(name, nullptr, visible)) ToggleChannelHidden(track.Id, c);
+            ImGui::PopID();
+        }
+    }
+    if (!any) ImGui::TextDisabled("У объекта нет кривых");
+
+    if (!m_hiddenChannels.empty()) {
+        ImGui::Separator();
+        if (ImGui::MenuItem("Показать все")) m_hiddenChannels.clear();
+    }
+}
+
+bool TimelinePanel::IsChannelHidden(int trackId, int channel) const {
+    for (const auto& kv : m_hiddenChannels) {
+        if (kv.first == trackId && kv.second == channel) return true;
+    }
+    return false;
+}
+
+void TimelinePanel::ToggleChannelHidden(int trackId, int channel) {
+    for (size_t i = 0; i < m_hiddenChannels.size(); ++i) {
+        if (m_hiddenChannels[i].first == trackId && m_hiddenChannels[i].second == channel) {
+            m_hiddenChannels.erase(m_hiddenChannels.begin() + (long)i);
+            return;
+        }
+    }
+    m_hiddenChannels.push_back({trackId, channel});
+}
+
 void TimelinePanel::DrawGraphTab(DirectorHost& host, const Layout& l) {
     AnimationDocument& doc = host.Document();
     ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -1001,19 +1104,48 @@ void TimelinePanel::DrawGraphTab(DirectorHost& host, const Layout& l) {
     }
     const float valueLo = m_valueCenter - m_valueSpan * 0.5f;
     const float valueHi = m_valueCenter + m_valueSpan * 0.5f;
+
+    // Диапазон, на который растягивается КОНКРЕТНАЯ кривая. В обычном режиме он
+    // общий для всех — так видно, что одна величина больше другой. В режиме
+    // нормализации у каждой кривой свой: сравнивать величины разных единиц
+    // бессмысленно, а видеть форму каждой — необходимо.
+    auto rangeOf = [&](const Curve& curve, float& lo, float& hi) {
+        if (!m_graphNormalize || curve.Empty()) { lo = valueLo; hi = valueHi; return; }
+        curve.ValueRange(lo, hi);
+        // Постоянная кривая (все ключи с одним значением) дала бы нулевой
+        // размах и деление на ноль — разводим её в полосу вокруг значения.
+        const float span = hi - lo;
+        if (span < 1e-4f) { lo -= 1.0f; hi += 1.0f; return; }
+        const float pad = span * 0.15f;
+        lo -= pad;
+        hi += pad;
+    };
+    auto valueToYOf = [&](const Curve& curve, float v) {
+        float lo, hi;
+        rangeOf(curve, lo, hi);
+        const float t = (v - lo) / std::max(hi - lo, 1e-4f);
+        return bottom - t * (bottom - top);
+    };
+    auto yToValueOf = [&](const Curve& curve, float y) {
+        float lo, hi;
+        rangeOf(curve, lo, hi);
+        const float t = (bottom - y) / std::max(bottom - top, 1.0f);
+        return lo + t * (hi - lo);
+    };
     auto valueToY = [&](float v) {
         const float t = (v - valueLo) / std::max(valueHi - valueLo, 1e-4f);
         return bottom - t * (bottom - top);
     };
-    auto yToValue = [&](float y) {
-        const float t = (bottom - y) / std::max(bottom - top, 1.0f);
-        return valueLo + t * (valueHi - valueLo);
-    };
 
-    // Горизонтальная сетка значений с подписями.
+    // Горизонтальная сетка значений с подписями. В режиме нормализации её нет:
+    // у каждой кривой своя шкала, и одна общая подпись «2.00» врала бы про все
+    // кривые, кроме одной. Точные значения там читаются наведением на ключ —
+    // подсказка показывает время и значение как есть, без пересчёта.
     if (ImFont* small = Theme::SmallFont()) ImGui::PushFont(small);
     const float valueStep = NiceStep(m_valueSpan, bottom - top);
-    for (float v = std::floor(valueLo / valueStep) * valueStep; v <= valueHi; v += valueStep) {
+    for (float v = m_graphNormalize ? valueHi + valueStep // цикл не выполнится
+                                    : std::floor(valueLo / valueStep) * valueStep;
+         v <= valueHi; v += valueStep) {
         const float y = valueToY(v);
         if (y < top || y > bottom) continue;
         const bool zero = std::fabs(v) < valueStep * 0.01f;
@@ -1032,6 +1164,7 @@ void TimelinePanel::DrawGraphTab(DirectorHost& host, const Layout& l) {
         for (int c = 0; c < track->ChannelCount(); ++c) {
             Curve& curve = track->Channels[(size_t)c];
             if (curve.Empty()) continue;
+            if (IsChannelHidden(track->Id, c)) continue;
             const ImU32 color = info.ChannelColors[c];
 
             // Саму кривую рисуем сэмплированием по пикселям: так на экране
@@ -1041,7 +1174,7 @@ void TimelinePanel::DrawGraphTab(DirectorHost& host, const Layout& l) {
             ImVec2 prev(0.0f, 0.0f);
             for (int s = 0; s <= steps; ++s) {
                 const float t = m_viewStart + (m_viewEnd - m_viewStart) * (float)s / (float)steps;
-                const ImVec2 p(TimeToX(l, t), valueToY(curve.Evaluate(t)));
+                const ImVec2 p(TimeToX(l, t), valueToYOf(curve, curve.Evaluate(t)));
                 if (s > 0) dl->AddLine(prev, p, color, 1.8f);
                 prev = p;
             }
@@ -1049,7 +1182,7 @@ void TimelinePanel::DrawGraphTab(DirectorHost& host, const Layout& l) {
             // Ключи и ручки касательных.
             for (int i = 0; i < curve.Count(); ++i) {
                 const Keyframe& key = curve.At(i);
-                const ImVec2 p(TimeToX(l, key.Time), valueToY(key.Value));
+                const ImVec2 p(TimeToX(l, key.Time), valueToYOf(curve, key.Value));
                 if (p.x < left - 10.0f || p.x > right + 10.0f) continue;
 
                 const KeyRef ref{track->Id, c, key.Time};
@@ -1061,9 +1194,9 @@ void TimelinePanel::DrawGraphTab(DirectorHost& host, const Layout& l) {
                     curve.EffectiveTangents(i, inTan, outTan);
                     const float handleSeconds = (m_viewEnd - m_viewStart) * 0.05f;
                     const ImVec2 hIn(TimeToX(l, key.Time - handleSeconds),
-                                     valueToY(key.Value - inTan * handleSeconds));
+                                     valueToYOf(curve, key.Value - inTan * handleSeconds));
                     const ImVec2 hOut(TimeToX(l, key.Time + handleSeconds),
-                                      valueToY(key.Value + outTan * handleSeconds));
+                                      valueToYOf(curve, key.Value + outTan * handleSeconds));
                     dl->AddLine(hIn, p, IM_COL32(255, 255, 255, 120), 1.0f);
                     dl->AddLine(p, hOut, IM_COL32(255, 255, 255, 120), 1.0f);
 
@@ -1119,14 +1252,19 @@ void TimelinePanel::DrawGraphTab(DirectorHost& host, const Layout& l) {
     if (m_draggingKeys && ImGui::IsMouseDragging(ImGuiMouseButton_Left) && !m_selectedKeys.empty()) {
         const float dy = ImGui::GetIO().MouseDelta.y;
         if (dy != 0.0f) {
-            const float dv = yToValue(0.0f) - yToValue(dy); // перевод пикселей в значения
             host.CommitUndo();
             for (const KeyRef& ref : m_selectedKeys) {
                 Track* track = doc.TrackById(ref.TrackId);
                 if (!track || ref.Channel >= track->ChannelCount()) continue;
                 Curve& curve = track->Channels[(size_t)ref.Channel];
                 const int index = curve.KeyIndexAt(ref.Time);
-                if (index >= 0) curve.AtMutable(index).Value += dv;
+                if (index < 0) continue;
+                // Перевод пикселей в значения делается ПО СВОЕЙ кривой: в режиме
+                // нормализации у каждой свой масштаб, и общий коэффициент увёл
+                // бы поворот в градусах на столько же, на сколько позицию в
+                // метрах, — то есть в никуда.
+                const float dv = yToValueOf(curve, 0.0f) - yToValueOf(curve, dy);
+                curve.AtMutable(index).Value += dv;
             }
             host.SetCurrentTime(host.CurrentTime()); // переприменить документ к сцене
         }
@@ -1144,7 +1282,7 @@ void TimelinePanel::DrawGraphTab(DirectorHost& host, const Layout& l) {
                     Keyframe& key = curve.AtMutable(m_tangentKey);
                     const ImVec2 mouse = ImGui::GetIO().MousePos;
                     const float dt = XToTime(l, mouse.x) - key.Time;
-                    const float dv = yToValue(mouse.y) - key.Value;
+                    const float dv = yToValueOf(curve, mouse.y) - key.Value;
                     // Наклон = приращение значения на приращение времени.
                     // Слишком близко к ключу знаменатель вырождается — держим
                     // минимальное плечо, иначе касательная улетает в бесконечность.
@@ -1225,7 +1363,7 @@ void TimelinePanel::Draw(DirectorHost& host) {
         }
         if (m_tab == 1) {
             ImGui::SameLine();
-            ImGui::Checkbox("Автомасштаб", &m_graphAutoFit);
+            DrawGraphMenu(host);
         }
     }
 

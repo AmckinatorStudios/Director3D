@@ -1,6 +1,7 @@
 #pragma once
 #include <cmath>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "imgui.h"
@@ -110,6 +111,22 @@ private:
     float m_valueCenter = 0.0f;
     float m_valueSpan = 10.0f;
     bool m_graphAutoFit = true;
+    // НОРМАЛИЗАЦИЯ: каждая кривая растягивается на свой размах, а не на общий.
+    //
+    // Без неё редактор кривых бесполезен ровно там, где он нужнее всего — когда
+    // у объекта одновременно ключуются величины разных ЕДИНИЦ. Поворот в 720
+    // градусов и позиция в двух метрах на одной оси значений означают, что
+    // позиция превращается в плоскую линию у нуля: править её нечем, потому что
+    // её формы не видно.
+    bool m_graphNormalize = false;
+    // Скрытые каналы: пара «дорожка + номер канала». Скрытие — это про ЧТЕНИЕ
+    // графика, поэтому живёт в панели, а не в документе: заглушка дорожки
+    // (Track::Muted) меняет анимацию, а тут кривая просто не рисуется.
+    std::vector<std::pair<int, int>> m_hiddenChannels;
+    void DrawGraphMenu(DirectorHost& host);
+    void DrawGraphChannelFilter(DirectorHost& host);
+    bool IsChannelHidden(int trackId, int channel) const;
+    void ToggleChannelHidden(int trackId, int channel);
     int m_draggingTangent = 0;      // 0 нет, -1 входная ручка, +1 выходная
     int m_tangentTrackId = 0, m_tangentChannel = 0, m_tangentKey = -1;
 };
