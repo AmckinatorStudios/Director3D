@@ -20,6 +20,7 @@
 
 #include "anim/BonePose.h"
 #include "anim/DirectorComponents.h"
+#include "export/GltfExporter.h"
 #include "project/Project.h"
 #include "render/VideoWriter.h"
 #include "sage/anim/AnimationSystem.h"
@@ -165,7 +166,8 @@ void DirectorLayer::OnAttach() {
     // построена демо-постановка), и снимать уже есть что.
     if (m_job.Active) {
         if (m_job.Showcase) BuildShowcase();
-        StartRenderJob();
+        if (!m_job.GltfOutput.empty()) m_gltfWaitFrames = 0;
+        else StartRenderJob();
     }
     if (std::getenv("D3D_BONE_TEST")) {
         // Персонаж создаётся тем же вызовом, что и по кнопке Create > Character,
@@ -838,6 +840,16 @@ void DirectorLayer::OnUpdate(float dt) {
             m_doc.KeyBone(*m_scene, id, joint, 2.0f);
             SetCurrentTime(1.0f);
         }
+    }
+
+    // Выгрузка в glTF из командной строки — после ожидания загрузки моделей.
+    if (m_gltfWaitFrames >= 0 && ++m_gltfWaitFrames > 4) {
+        m_gltfWaitFrames = -1;
+        std::string err;
+        const bool ok = ExportAnimationToGltf(m_job.GltfOutput, err);
+        if (!ok) LOG_ERROR("glTF") << "Экспорт не удался: " << err;
+        RequestQuit();
+        return;
     }
 
     // Проверка костей ждёт, пока движок догрузит модель персонажа: скелет
@@ -1990,6 +2002,23 @@ bool DirectorLayer::SaveProject(const fs::path& path, std::string& err) {
 
 bool DirectorLayer::ExportSceneToEngine(const fs::path& path, std::string& err) {
     return ProjectFile::SaveSceneOnly(path.string(), *m_scene, err);
+}
+
+bool DirectorLayer::ExportAnimationToGltf(const fs::path& path, std::string& err) {
+    gltf::Options options;
+    gltf::Result result;
+    const bool ok = gltf::Export(path.string(), *m_scene, m_doc, options, result, err);
+
+    // Экспортёр гоняет сцену по времени и оставляет её на последнем снятом
+    // кадре — возвращаем на головку САМИ, и в любом случае, включая ошибку:
+    // прерваться на середине и бросить сцену в чужом моменте хуже всего.
+    SetCurrentTime(CurrentTime());
+
+    if (ok) {
+        SetStatus(std::string(T("Анимация экспортирована: дорожек ")) +
+                  std::to_string(result.Channels) + T(", кадров ") + std::to_string(result.Samples));
+    }
+    return ok;
 }
 
 // ============================================================================

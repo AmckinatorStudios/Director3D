@@ -91,6 +91,7 @@ add_executable(Director3D
     src/project/UndoStack.cpp
     src/project/Project.cpp
     src/render/StageRenderer.cpp
+    src/export/GltfExporter.cpp
     src/render/SequenceExporter.cpp
     src/render/VideoWriter.cpp
     src/ui/Theme.cpp

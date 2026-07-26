@@ -50,6 +50,7 @@ namespace d3d {
 struct RenderJob {
     bool Active = false;
     std::string Output;             // путь к файлу (.mp4) или каталогу (PNG)
+    std::string GltfOutput;         // путь к .glb; непусто — вместо рендера выгружаем анимацию
     bool Showcase = false;          // построить встроенную демо-анимацию
     int Width = 1920, Height = 1080;
     float Fps = 0.0f;               // 0 — взять из проекта
@@ -123,6 +124,7 @@ public:
     bool OpenProject(const std::filesystem::path& path, std::string& err) override;
     bool SaveProject(const std::filesystem::path& path, std::string& err) override;
     bool ExportSceneToEngine(const std::filesystem::path& path, std::string& err) override;
+    bool ExportAnimationToGltf(const std::filesystem::path& path, std::string& err) override;
     const std::filesystem::path& ProjectPath() const override { return m_projectPath; }
     bool Dirty() const override { return m_dirty; }
 
@@ -228,6 +230,10 @@ private:
     bool m_rebindBones = false;
     // Проверка костей ждёт, пока движок догрузит модель персонажа; -1 — не идёт.
     int m_boneCheckFrames = -1;
+    // Кадры ожидания перед выгрузкой в glTF из командной строки. Модели
+    // грузятся ЛЕНИВО, и скелет появляется через кадр-другой: выгрузить сразу
+    // значило бы записать персонажа без костей и не заметить этого.
+    int m_gltfWaitFrames = -1;
     int m_pendingBoneSelect = -1; // кость из D3D_CHARACTER, ждущая загрузки модели
     bool m_pendingBoneKeys = false; // поставить пару ключей на неё (для снимков)
     int m_activeCameraId = -1;

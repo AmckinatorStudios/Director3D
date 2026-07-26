@@ -39,6 +39,7 @@ struct BoneSelection {
 
 // Модальные окна, которые умеет показывать DialogsPanel.
 enum class Dialog { None, NewProject, OpenProject, SaveProjectAs, ImportAsset, ExportScene,
+                    ExportGltf,
                     RenderSettings, TimelineSettings, About, Shortcuts };
 
 // ---------------------------------------------------------------------------
@@ -129,6 +130,9 @@ public:
     virtual bool OpenProject(const std::filesystem::path& path, std::string& err) = 0;
     virtual bool SaveProject(const std::filesystem::path& path, std::string& err) = 0;
     virtual bool ExportSceneToEngine(const std::filesystem::path& path, std::string& err) = 0;
+    // Экспорт анимации в glTF (.glb): движение объектов, камер и костей в
+    // формате, который читают Blender, игровые движки и браузер.
+    virtual bool ExportAnimationToGltf(const std::filesystem::path& path, std::string& err) = 0;
     virtual const std::filesystem::path& ProjectPath() const = 0;
     virtual bool Dirty() const = 0;
 

@@ -24,6 +24,7 @@ private:
     void DrawSaveProjectAs(DirectorHost& host);
     void DrawImportAsset(DirectorHost& host);
     void DrawExportScene(DirectorHost& host);
+    void DrawExportGltf(DirectorHost& host);
     void DrawRenderSettings(DirectorHost& host);
     void DrawTimelineSettings(DirectorHost& host);
     void DrawAbout(DirectorHost& host);

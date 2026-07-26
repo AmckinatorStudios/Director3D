@@ -20,6 +20,9 @@
 #include "ui/FileDialog.h"
 #include "ui/Localization.h"
 #include "sage/scene/Components.h"
+#include <nlohmann/json.hpp>
+
+#include "export/GltfExporter.h"
 #include "sage/scene/Scene.h"
 #include "sage/scene/Transform.h"
 
@@ -1110,6 +1113,157 @@ void TestFileDialog() {
     }
 }
 
+// --- Экспорт в glTF --------------------------------------------------------
+
+// Экспорт проверяется РАЗБОРОМ ТОГО, ЧТО НАПИСАНО, а не фактом «функция вернула
+// true». Битый glTF выглядит как обычный файл: он создаётся, весит сколько
+// надо, и узнаёшь о поломке уже в Blender, который просто отказывается его
+// открывать. Поэтому здесь файл читается обратно и сверяется с документом.
+void TestGltfExport() {
+    Section("Экспорт в glTF");
+
+    auto scene = std::make_unique<Scene>();
+    GameObject cube = scene->CreateObject("Cube");
+    cube.GetTransform().Position = {1.0f, 2.0f, 3.0f};
+    GameObject still = scene->CreateObject("Still");
+    still.GetTransform().Position = {-5.0f, 0.0f, 0.0f};
+
+    AnimationDocument doc;
+    doc.Name = "TestClip";
+    doc.Fps = 10.0f;
+    doc.Duration = 2.0f;
+
+    // Движется только куб: неподвижный объект нужен, чтобы проверить, что на
+    // него дорожек НЕ завели.
+    Track& pos = doc.EnsureTrack(cube.Id(), Property::Position);
+    pos.Channels[0].SetKey(0.0f, 0.0f, Interp::Linear);
+    pos.Channels[0].SetKey(2.0f, 10.0f, Interp::Linear);
+    Track& rot = doc.EnsureTrack(cube.Id(), Property::Rotation);
+    rot.Channels[1].SetKey(0.0f, 0.0f, Interp::Linear);
+    rot.Channels[1].SetKey(2.0f, 90.0f, Interp::Linear);
+
+    const std::string path = "/tmp/director3d_export.glb";
+    gltf::Options options;
+    gltf::Result result;
+    std::string err;
+    Check(gltf::Export(path, *scene, doc, options, result, err), "экспорт прошёл");
+    if (!err.empty()) std::printf("    причина: %s\n", err.c_str());
+
+    // 21 кадр: 2 секунды по 10 кадров плюс замыкающий.
+    Check(result.Samples == 21, "кадров снято по частоте документа");
+    Check(result.Channels == 2, "дорожки только у того, что реально движется");
+
+    // --- Разбор контейнера GLB ---
+    std::ifstream file(path, std::ios::binary);
+    Check((bool)file, "файл открывается");
+    std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(file)),
+                                     std::istreambuf_iterator<char>());
+    file.close();
+    Check(bytes.size() > 12, "файл не пустой");
+
+    auto u32 = [&bytes](size_t at) {
+        unsigned int v = 0;
+        std::memcpy(&v, bytes.data() + at, 4);
+        return v;
+    };
+    Check(u32(0) == 0x46546C67u, "магия glTF на месте");
+    Check(u32(4) == 2u, "версия контейнера 2");
+    Check(u32(8) == bytes.size(), "длина в заголовке совпадает с размером файла");
+
+    const unsigned int jsonLen = u32(12);
+    Check(u32(16) == 0x4E4F534Au, "первый кусок — JSON");
+    // Выравнивание на 4 — не педантизм: часть загрузчиков на невыровненном
+    // куске просто отказывается читать файл, и ошибка вылезет у чужого
+    // человека в чужой программе.
+    Check(jsonLen % 4 == 0, "кусок JSON выровнен на 4 байта");
+
+    const std::string jsonText((const char*)bytes.data() + 20, jsonLen);
+    nlohmann::json root;
+    bool parsed = true;
+    try { root = nlohmann::json::parse(jsonText); } catch (...) { parsed = false; }
+    Check(parsed, "JSON разбирается");
+    if (!parsed) return;
+
+    const size_t binHeader = 20 + jsonLen;
+    Check(u32(binHeader + 4) == 0x004E4942u, "второй кусок — BIN");
+    const unsigned int binLen = u32(binHeader);
+    Check(binHeader + 8 + binLen == bytes.size(), "длина BIN сходится с файлом");
+
+    Check(root["asset"]["version"] == "2.0", "версия ассета 2.0");
+    Check(root.contains("animations") && root["animations"].size() == 1, "анимация одна");
+    Check(root["animations"][0]["name"] == "TestClip", "имя анимации взято из документа");
+    Check(root["animations"][0]["channels"].size() == 2, "каналов в файле столько же");
+
+    // Вход сэмплера ОБЯЗАН нести min/max — по ним загрузчик узнаёт
+    // длительность, не читая данные. Без них файл формально невалиден.
+    const int inputAcc = root["animations"][0]["samplers"][0]["input"];
+    const nlohmann::json& input = root["accessors"][(size_t)inputAcc];
+    Check(input.contains("min") && input.contains("max"), "у времени есть границы");
+    Check(std::fabs((float)input["max"][0] - 2.0f) < 1e-4f, "верхняя граница равна длительности");
+    Check(input["count"] == 21, "отсчётов времени столько же, сколько кадров");
+
+    // --- Сверка ЧИСЕЛ, а не только структуры ---
+    // Читаем выход канала переноса из бинарного куска и сравниваем с кривой.
+    auto readFloats = [&](int accessorIndex, std::vector<float>& out) {
+        const nlohmann::json& acc = root["accessors"][(size_t)accessorIndex];
+        const nlohmann::json& bv = root["bufferViews"][(size_t)acc["bufferView"]];
+        const size_t offset = binHeader + 8 + (size_t)bv["byteOffset"];
+        const size_t count = (size_t)bv["byteLength"] / 4;
+        out.resize(count);
+        std::memcpy(out.data(), bytes.data() + offset, count * 4);
+    };
+
+    int translationSampler = -1;
+    for (const nlohmann::json& ch : root["animations"][0]["channels"]) {
+        if (ch["target"]["path"] == "translation") translationSampler = ch["sampler"];
+    }
+    Check(translationSampler >= 0, "канал переноса найден");
+    if (translationSampler >= 0) {
+        std::vector<float> values;
+        readFloats(root["animations"][0]["samplers"][(size_t)translationSampler]["output"], values);
+        Check(values.size() == 21 * 3, "значений переноса ровно по три на кадр");
+        // Кривая линейна от 0 до 10 за 2 секунды: середина обязана быть 5.
+        CheckNear(values[0], 0.0f, 1e-3f, "перенос в начале совпадает с ключом");
+        CheckNear(values[10 * 3], 5.0f, 1e-3f, "перенос в середине совпадает с кривой");
+        CheckNear(values[20 * 3], 10.0f, 1e-3f, "перенос в конце совпадает с ключом");
+        // Y и Z не анимированы — обязаны остаться теми, что стоят у объекта.
+        CheckNear(values[10 * 3 + 1], 2.0f, 1e-3f, "неанимированный канал сохранил своё значение");
+    }
+
+    // Поворот уходит кватернионом. 90° вокруг Y — это (0, sin45, 0, cos45).
+    int rotationSampler = -1;
+    for (const nlohmann::json& ch : root["animations"][0]["channels"]) {
+        if (ch["target"]["path"] == "rotation") rotationSampler = ch["sampler"];
+    }
+    if (rotationSampler >= 0) {
+        std::vector<float> q;
+        readFloats(root["animations"][0]["samplers"][(size_t)rotationSampler]["output"], q);
+        Check(q.size() == 21 * 4, "у поворота по четыре числа на кадр");
+        const float s = std::sin(glm::radians(45.0f));
+        CheckNear(q[20 * 4 + 1], s, 1e-3f, "поворот 90° вокруг Y дал верный кватернион");
+        CheckNear(q[20 * 4 + 3], s, 1e-3f, "и его скалярную часть");
+        // Кватернион обязан быть единичным на каждом кадре: ненормированный
+        // масштабирует объект в принимающей программе.
+        bool unit = true;
+        for (size_t i = 0; i + 3 < q.size(); i += 4) {
+            const float len = std::sqrt(q[i] * q[i] + q[i + 1] * q[i + 1] +
+                                        q[i + 2] * q[i + 2] + q[i + 3] * q[i + 3]);
+            if (std::fabs(len - 1.0f) > 1e-3f) unit = false;
+        }
+        Check(unit, "все кватернионы единичные");
+    }
+
+    // Поза узла в файле — ПЕРВЫЙ кадр: файл, открытый без проигрывания, должен
+    // показывать начало ролика, а не свалку объектов в начале координат.
+    bool foundCube = false;
+    for (const nlohmann::json& n : root["nodes"]) {
+        if (n.value("name", std::string{}) != "Cube") continue;
+        foundCube = true;
+        CheckNear((float)n["translation"][0], 0.0f, 1e-3f, "поза узла взята с первого кадра");
+    }
+    Check(foundCube, "узел объекта попал в файл под своим именем");
+}
+
 // --- Монтаж камер ----------------------------------------------------------
 
 // Дорожка монтажа — единственное место, где инструмент отвечает на вопрос
@@ -1759,6 +1913,7 @@ int RunSelfTest() {
     TestFileDialog();
     TestLocalization();
     TestCameraTrack();
+    TestGltfExport();
     TestClipTracks();
     TestAudioTrackTimeline();
     TestUndo();

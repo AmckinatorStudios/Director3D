@@ -31,6 +31,7 @@ void MenuBarPanel::Draw(DirectorHost& host) {
         ImGui::Separator();
         if (ImGui::MenuItem(T("Импорт…"), "Ctrl+I")) host.OpenDialog(Dialog::ImportAsset);
         if (ImGui::MenuItem(T("Экспорт сцены (.sage)…"))) host.OpenDialog(Dialog::ExportScene);
+        if (ImGui::MenuItem(T("Экспорт анимации (.glb)…"))) host.OpenDialog(Dialog::ExportGltf);
         ImGui::Separator();
         if (ImGui::MenuItem(T("Выход"), "Alt+F4")) host.RequestQuit();
         ImGui::EndMenu();

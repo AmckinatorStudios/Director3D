@@ -30,6 +30,7 @@ const char* TitleOf(Dialog dialog) {
         case Dialog::SaveProjectAs:    return T("Сохранить проект как");
         case Dialog::ImportAsset:      return T("Импорт");
         case Dialog::ExportScene:      return T("Экспорт сцены (.sage)");
+        case Dialog::ExportGltf:       return T("Экспорт анимации (.glb)");
         case Dialog::RenderSettings:   return T("Настройки рендера");
         case Dialog::TimelineSettings: return T("Настройки таймлайна");
         case Dialog::About:            return T("О программе Director 3D");
@@ -154,6 +155,7 @@ void DialogsPanel::Draw(DirectorHost& host) {
         case Dialog::SaveProjectAs:    DrawSaveProjectAs(host); break;
         case Dialog::ImportAsset:      DrawImportAsset(host); break;
         case Dialog::ExportScene:      DrawExportScene(host); break;
+        case Dialog::ExportGltf:       DrawExportGltf(host); break;
         case Dialog::RenderSettings:   DrawRenderSettings(host); break;
         case Dialog::TimelineSettings: DrawTimelineSettings(host); break;
         case Dialog::About:            DrawAbout(host); break;
@@ -341,6 +343,49 @@ void DialogsPanel::DrawExportScene(DirectorHost& host) {
         std::string err;
         if (host.ExportSceneToEngine(path, err)) {
             host.SetStatus(T("Сцена экспортирована"));
+            Close();
+        } else {
+            m_error = T("Не удалось экспортировать: ") + err;
+        }
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button(T("Отмена"), ImVec2(120.0f, 0.0f))) Close();
+    ImGui::EndPopup();
+}
+
+void DialogsPanel::DrawExportGltf(DirectorHost& host) {
+    if (!BeginModal(TitleOf(Dialog::ExportGltf))) return;
+
+    ImGui::TextWrapped("%s", T("Движение объектов, камер и костей в формате glTF 2.0 — его читают "
+                       "Blender, игровые движки и браузер."));
+    ImGui::Spacing();
+    // Границы формата названы прямо в диалоге, а не в документации: узнать о
+    // них после экспорта, из чужой программы, куда обиднее.
+    ImGui::PushStyleColor(ImGuiCol_Text, Theme::Colors::TextDim);
+    ImGui::TextWrapped("%s", T("Геометрия НЕ выгружается: возьмите свою модель и наложите на неё "
+                       "это движение. Угол обзора, свет и пост-обработка в glTF не "
+                       "анимируются — эти дорожки остаются в проекте."));
+    ImGui::PopStyleColor();
+    ImGui::Spacing();
+
+    PathField(T("Куда сохранить (.glb)"), m_path, sizeof(m_path), /*mustExist=*/false,
+              BrowseSpec{T("Экспорт анимации в glTF"),
+                         {{T("Анимация glTF"), "*.glb"}}, true, "animation.glb"});
+    if (!m_error.empty()) {
+        ImGui::PushStyleColor(ImGuiCol_Text, Theme::Colors::Record);
+        ImGui::TextWrapped("%s", m_error.c_str());
+        ImGui::PopStyleColor();
+    }
+
+    ImGui::Separator();
+    ImGui::BeginDisabled(m_path[0] == '\0');
+    if (ImGui::Button(T("Экспортировать"), ImVec2(140.0f, 0.0f))) {
+        fs::path path(m_path);
+        if (path.extension() != ".glb") path += ".glb";
+        std::string err;
+        if (host.ExportAnimationToGltf(path, err)) {
+            host.SetStatus(T("Анимация экспортирована"));
             Close();
         } else {
             m_error = T("Не удалось экспортировать: ") + err;

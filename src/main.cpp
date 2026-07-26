@@ -54,6 +54,8 @@ sage::Application* sage::CreateApplication(int argc, char** argv) {
         const char* arg = argv[i];
         if (std::strcmp(arg, "--render") == 0) {
             if (const char* v = next(i)) { job.Active = true; job.Output = v; }
+        } else if (std::strcmp(arg, "--export-gltf") == 0) {
+            if (const char* v = next(i)) { job.Active = true; job.GltfOutput = v; }
         } else if (std::strcmp(arg, "--showcase") == 0) {
             job.Showcase = true;
         } else if (std::strcmp(arg, "--width") == 0) {
@@ -76,6 +78,7 @@ sage::Application* sage::CreateApplication(int argc, char** argv) {
                 "  Director3D [проект.d3dproj]            открыть проект в интерфейсе\n"
                 "  Director3D --self-test                 самотест ядра, без окна и OpenGL\n"
                 "  Director3D --render <файл|каталог> [...] снять ролик и выйти\n"
+                "  Director3D --export-gltf <файл.glb>    выгрузить анимацию и выйти\n"
                 "\nПакетный рендер:\n"
                 "  --render <путь>   .mp4 — готовый ролик, иначе каталог с секвенцией PNG\n"
                 "  --showcase        снять встроенную демо-постановку вместо проекта\n"
@@ -84,6 +87,9 @@ sage::Application* sage::CreateApplication(int argc, char** argv) {
                 "  --start/--end <с> диапазон в секундах (--end 0 — до конца ролика)\n"
                 "  --samples <н>     сглаживание накоплением, 1 — выключено\n"
                 "  --quality <crf>   качество H.264: 18 без потерь, 23 обычное\n"
+                "\nЭкспорт анимации:\n"
+                "  --export-gltf <файл.glb>  движение объектов, камер и костей в glTF 2.0.\n"
+                "                            Сочетается с --showcase и с путём к проекту.\n"
                 "\nMP4 требует ffmpeg в PATH. Окно создаётся всегда (нужен контекст\n"
                 "OpenGL), но под xvfb-run экран и видеокарта не нужны.\n");
             std::exit(0);
