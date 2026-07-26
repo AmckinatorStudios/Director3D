@@ -203,9 +203,13 @@ json SaveDocument(const AnimationDocument& doc) {
         jt["id"] = t.Id;
         jt["target"] = t.TargetId;
         jt["property"] = PropertyInfoOf(t.Prop).Key;
-        if (IsBoneProperty(t.Prop)) {
+        if (HasSubIndex(t.Prop)) {
             // Пишем и индекс, и имя: имя — основная привязка (переживает
             // переэкспорт модели), индекс — запасная, если кости переименовали.
+            // Условие именно про ПОДЫНДЕКС, а не про кости: у дорожки веса
+            // блендшейпа номер цели точно так же единственное, что отличает её
+            // от соседней, и без него мимика после открытия проекта молча
+            // переставала применяться.
             jt["joint"] = t.Joint;
             jt["jointName"] = t.JointName;
         }
@@ -266,7 +270,7 @@ void LoadDocument(AnimationDocument& doc, const json& in) {
         t.Id = jt.value("id", 0);
         t.TargetId = jt.value("target", 0);
         t.Prop = prop;
-        if (IsBoneProperty(prop)) {
+        if (HasSubIndex(prop)) {
             t.Joint = jt.value("joint", -1);
             t.JointName = jt.value("jointName", std::string{});
         }

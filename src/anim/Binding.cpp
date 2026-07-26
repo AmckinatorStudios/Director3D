@@ -66,6 +66,8 @@ const std::vector<PropertyInfo>& PropertyTable() { return kTable; }
 
 bool IsMorphProperty(Property prop) { return prop == Property::MorphWeight; }
 
+bool HasSubIndex(Property prop) { return IsBoneProperty(prop) || IsMorphProperty(prop); }
+
 bool IsBoneProperty(Property prop) {
     return prop == Property::BonePosition || prop == Property::BoneRotation ||
            prop == Property::BoneScale;

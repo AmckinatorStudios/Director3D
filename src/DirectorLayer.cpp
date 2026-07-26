@@ -1,6 +1,8 @@
 #include "DirectorLayer.h"
 
 #include <algorithm>
+#include <fstream>
+#include <functional>
 #include <cmath>
 #include <chrono>
 #include <cstdlib>
@@ -358,6 +360,14 @@ void DirectorLayer::FinishSmokeTest() {
     int found = 0;
     std::error_code ec;
 
+    // Кадры секвенции сверяем ПОБАЙТОВО между собой. «Файл есть и не пуст» —
+    // проверка слабее, чем кажется: она пройдёт и тогда, когда дорожки перестали
+    // применяться к сцене и все двенадцать кадров вышли одинаковыми. А это как
+    // раз самая опасная поломка — молчаливая. PNG детерминирован, поэтому
+    // одинаковая картинка даёт одинаковые байты, и различие файлов означает
+    // различие кадров.
+    int distinctFrames = 0;
+    bool framesMove = false;
     if (mp4) {
         // У ролика проверяем не «файл есть», а «файл не пуст»: оборванный
         // кодировщик оставляет нулевой файл, который выглядит как результат.
@@ -368,17 +378,44 @@ void DirectorLayer::FinishSmokeTest() {
                               << " байт)";
         }
     } else if (fs::is_directory(m_renderSettings.OutputDir, ec)) {
+        std::vector<fs::path> frames;
         for (const fs::directory_entry& entry : fs::directory_iterator(m_renderSettings.OutputDir, ec)) {
             // Пустой файл — это не отрендеренный кадр, а следы падения на
             // середине записи, поэтому проверяем и размер.
-            if (entry.path().extension() == ".png" && entry.file_size(ec) > 0) ++found;
+            if (entry.path().extension() == ".png" && entry.file_size(ec) > 0) {
+                ++found;
+                frames.push_back(entry.path());
+            }
         }
+        std::sort(frames.begin(), frames.end()); // имена нумерованные — порядок по имени и есть порядок кадров
+
+        std::vector<size_t> hashes;
+        hashes.reserve(frames.size());
+        for (const fs::path& frame : frames) {
+            std::ifstream file(frame, std::ios::binary);
+            std::string bytes((std::istreambuf_iterator<char>(file)),
+                              std::istreambuf_iterator<char>());
+            hashes.push_back(std::hash<std::string>{}(bytes));
+        }
+        std::vector<size_t> unique = hashes;
+        std::sort(unique.begin(), unique.end());
+        unique.erase(std::unique(unique.begin(), unique.end()), unique.end());
+        distinctFrames = (int)unique.size();
+
+        // Требуем, чтобы РАЗНЫМИ были почти все кадры, а не только первый с
+        // последним: одного отличия хватило бы и сцене, где что-то дёрнулось
+        // единственный раз, а дорожки при этом стоят.
+        framesMove = distinctFrames >= (int)frames.size() - 1 && frames.size() > 2;
+        LOG_INFO("Smoke") << "Различных кадров: " << distinctFrames << " из " << frames.size();
     }
 
-    if (found >= expected && !m_exporter.Failed()) {
+    if (found >= expected && !m_exporter.Failed() && (mp4 || framesMove)) {
         LOG_INFO("Smoke") << "Сквозная проверка пройдена (" << (mp4 ? "MP4" : "PNG")
                           << "): кадров записано " << found << " из " << expected << ", дорожек "
                           << m_doc.Tracks.size();
+    } else if (found >= expected && !m_exporter.Failed() && !framesMove) {
+        LOG_ERROR("Smoke") << "Сквозная проверка ПРОВАЛЕНА: кадры записаны, но не отличаются друг "
+                              "от друга (" << distinctFrames << " различных) — дорожки не двигают сцену";
     } else {
         LOG_ERROR("Smoke") << "Сквозная проверка ПРОВАЛЕНА (" << (mp4 ? "MP4" : "PNG")
                            << "): кадров " << found << " из " << expected

@@ -750,6 +750,318 @@ void TestBoneTracks() {
     fs::remove(path, ec);
 }
 
+// --- Дорожки ---------------------------------------------------------------
+
+// Дорожка — центральная сущность инструмента: всё, что аниматор делает, в итоге
+// оказывается в ней, и всё, что видно в кадре, из неё читается. Проверки ниже
+// идут по её жизненному циклу: завести — наполнить ключами — применить к сцене
+// — сохранить и открыть заново.
+void TestTracks() {
+    Section("Дорожки");
+
+    int cubeId = 0, cameraId = 0, lightId = 0;
+    std::unique_ptr<Scene> scene = MakeHeadlessScene(cubeId, cameraId, lightId);
+
+    // --- Заведение и поиск ---
+    {
+        AnimationDocument doc;
+        Track& a = doc.EnsureTrack(cubeId, Property::Position);
+        const int firstId = a.Id;
+        Track& b = doc.EnsureTrack(cubeId, Property::Position);
+        Check(doc.Tracks.size() == 1, "повторный EnsureTrack не плодит дубликат");
+        Check(b.Id == firstId, "повторный EnsureTrack отдаёт ту же дорожку");
+
+        doc.EnsureTrack(cubeId, Property::Rotation);
+        doc.EnsureTrack(cameraId, Property::Position);
+        Check(doc.Tracks.size() == 3, "разные свойства и разные объекты — разные дорожки");
+        Check(doc.FindTrack(cameraId, Property::Position) != nullptr, "дорожка находится по объекту и свойству");
+        Check(doc.FindTrack(lightId, Property::Position) == nullptr, "чужая дорожка не находится");
+
+        // Идентификаторы обязаны быть уникальны: по ним таймлайн адресует
+        // дорожки при перетаскивании ключей, и совпадение означало бы правку
+        // не той строки.
+        bool unique = true;
+        for (size_t i = 0; i < doc.Tracks.size(); ++i) {
+            for (size_t j = i + 1; j < doc.Tracks.size(); ++j) {
+                if (doc.Tracks[i].Id == doc.Tracks[j].Id) unique = false;
+            }
+        }
+        Check(unique, "идентификаторы дорожек уникальны");
+        Check(doc.TrackById(firstId) != nullptr, "дорожка находится по идентификатору");
+        Check(doc.TrackById(99999) == nullptr, "несуществующий идентификатор не находится");
+
+        // Число каналов диктует свойство, а не вызывающий.
+        Check(doc.EnsureTrack(cubeId, Property::Position).ChannelCount() == 3, "у вектора три канала");
+        Check(doc.EnsureTrack(lightId, Property::LightIntensity).ChannelCount() == 1, "у скаляра один канал");
+    }
+
+    // --- Подындекс: кости и блендшейпы ---
+    // У костных и морф-дорожек к паре «объект + свойство» добавляется третий
+    // ключ — номер кости или цели. Без него две кости одного персонажа
+    // схлопнулись бы в одну дорожку.
+    {
+        AnimationDocument doc;
+        doc.EnsureTrack(cubeId, Property::BoneRotation, 3);
+        doc.EnsureTrack(cubeId, Property::BoneRotation, 5);
+        Check(doc.Tracks.size() == 2, "две кости — две дорожки поворота");
+        Check(doc.FindTrack(cubeId, Property::BoneRotation, 3) !=
+              doc.FindTrack(cubeId, Property::BoneRotation, 5), "дорожки костей различаются");
+
+        doc.EnsureTrack(cubeId, Property::MorphWeight, 0);
+        doc.EnsureTrack(cubeId, Property::MorphWeight, 1);
+        Check(doc.Tracks.size() == 4, "две морф-цели — две дорожки веса");
+
+        // У обычного свойства подындекс должен игнорироваться, иначе один и тот
+        // же «Location» завёлся бы дважды из-за случайно переданного номера.
+        doc.EnsureTrack(cubeId, Property::Position, 7);
+        doc.EnsureTrack(cubeId, Property::Position, -1);
+        Check(doc.Tracks.size() == 5, "у обычного свойства подындекс не создаёт вторую дорожку");
+    }
+
+    // --- Ключи и навигация по ним ---
+    {
+        AnimationDocument doc;
+        Track& t = doc.EnsureTrack(cubeId, Property::Position);
+        t.Channels[0].SetKey(1.0f, 0.0f);
+        t.Channels[1].SetKey(2.0f, 0.0f);
+
+        Check(doc.HasKeyAt(t, 1.0f), "ключ на времени первого канала найден");
+        Check(doc.HasKeyAt(t, 2.0f), "ключ на времени второго канала найден");
+        Check(!doc.HasKeyAt(t, 1.5f), "между ключами ключа нет");
+        // Совпадение времени с точностью до эпсилона — это тот же кадр: иначе
+        // клик по ромбу промахивался бы мимо собственного ключа из-за float.
+        Check(doc.HasKeyAt(t, 1.0f + Curve::kTimeEpsilon * 0.5f), "ключ найден с точностью до эпсилона");
+
+        Check(doc.RemoveKeysAt(t, 1.0f) == 1, "снят ровно один ключ");
+        Check(!doc.HasKeyAt(t, 1.0f), "снятый ключ пропал");
+        Check(doc.RemoveKeysAt(t, 42.0f) == 0, "снятие с пустого времени ничего не делает");
+
+        // Навигация идёт по ВСЕМУ документу, а не по одной дорожке: кнопки
+        // «предыдущий/следующий ключ» на транспорте не знают про выделение.
+        AnimationDocument nav;
+        nav.EnsureTrack(cubeId, Property::Position).Channels[0].SetKey(1.0f, 0.0f);
+        nav.EnsureTrack(cameraId, Property::CameraFov).Channels[0].SetKey(2.5f, 50.0f);
+        nav.EnsureClipTrack(lightId).Blocks.push_back(ClipBlock{"Idle", 0, 4.0f, 1.0f, 1.0f, 0.25f, true});
+        nav.Markers.push_back(Marker{"Удар", 0.5f, 0u});
+
+        float t2 = 0.0f;
+        Check(nav.NextKeyTime(0.0f, t2) && std::fabs(t2 - 0.5f) < 1e-4f, "следующей найдена метка");
+        Check(nav.NextKeyTime(0.6f, t2) && std::fabs(t2 - 1.0f) < 1e-4f, "следующим найден ключ другой дорожки");
+        Check(nav.NextKeyTime(1.5f, t2) && std::fabs(t2 - 2.5f) < 1e-4f, "следующим найден ключ камеры");
+        Check(nav.NextKeyTime(3.0f, t2) && std::fabs(t2 - 4.0f) < 1e-4f, "следующим найдено начало блока клипа");
+        Check(nav.NextKeyTime(4.5f, t2) && std::fabs(t2 - 5.0f) < 1e-4f, "следующим найден конец блока клипа");
+        Check(!nav.NextKeyTime(9.0f, t2), "за последним событием следующего нет");
+        Check(nav.PrevKeyTime(1.0f, t2) && std::fabs(t2 - 0.5f) < 1e-4f, "предыдущее событие найдено");
+        // Строгое неравенство: иначе «следующий ключ», стоя НА ключе, никуда бы
+        // не двигал головку.
+        Check(nav.NextKeyTime(1.0f, t2) && t2 > 1.0f, "стоя на ключе, переходим к следующему, а не к себе");
+        Check(!nav.PrevKeyTime(0.5f, t2), "перед первым событием предыдущего нет");
+    }
+
+    // --- Заглушка и замок ---
+    {
+        AnimationDocument doc;
+        Track& t = doc.EnsureTrack(cubeId, Property::Position);
+        t.Channels[0].SetKey(0.0f, 100.0f, Interp::Linear);
+
+        scene->Get(cubeId).GetTransform().Position.x = 0.0f;
+        t.Muted = true;
+        doc.Apply(*scene, 0.0f, true);
+        CheckNear(scene->Get(cubeId).GetTransform().Position.x, 0.0f, 1e-4f,
+                  "заглушенная дорожка не применяется");
+        t.Muted = false;
+        doc.Apply(*scene, 0.0f, true);
+        CheckNear(scene->Get(cubeId).GetTransform().Position.x, 100.0f, 1e-4f,
+                  "снятие заглушки возвращает дорожку в работу");
+
+        // Замок защищает от АВТО-ключа: аниматор запирает готовую дорожку, чтобы
+        // случайное движение объекта её не переписало.
+        t.Locked = true;
+        scene->Get(cubeId).GetTransform().Position.x = 7.0f;
+        Check(doc.KeyExistingTracks(*scene, cubeId, 1.0f) == 0, "авто-ключ не трогает запертую дорожку");
+        Check(!doc.HasKeyAt(t, 1.0f), "на запертой дорожке ключ не появился");
+        t.Locked = false;
+        Check(doc.KeyExistingTracks(*scene, cubeId, 1.0f) == 1, "после снятия замка авто-ключ работает");
+    }
+
+    // --- Авто-ключ ставит только на СУЩЕСТВУЮЩИЕ дорожки ---
+    {
+        AnimationDocument doc;
+        doc.EnsureTrack(cubeId, Property::Position);
+        Check(doc.KeyExistingTracks(*scene, cubeId, 0.0f) == 1,
+              "авто-ключ прошёл по единственной дорожке");
+        Check(doc.Tracks.size() == 1,
+              "авто-ключ не заводит дорожки на всё подряд");
+        Check(doc.KeyExistingTracks(*scene, lightId, 0.0f) == 0,
+              "у объекта без дорожек авто-ключу делать нечего");
+    }
+
+    // --- Дорожки клипов ---
+    {
+        AnimationDocument doc;
+        ClipTrack& ct = doc.EnsureClipTrack(cubeId);
+        Check(doc.ClipTracks.size() == 1, "дорожка клипов создана");
+        Check(&doc.EnsureClipTrack(cubeId) == &ct, "повторный вызов отдаёт ту же дорожку клипов");
+        Check(doc.FindClipTrack(lightId) == nullptr, "чужой дорожки клипов нет");
+
+        ct.Blocks.push_back(ClipBlock{"Walk", 0, 0.0f, 2.0f, 1.0f, 0.25f, true});
+        ct.Blocks.push_back(ClipBlock{"Run", 1, 3.0f, 2.0f, 1.5f, 0.3f, false});
+        CheckNear(doc.ContentEnd(), 5.0f, 1e-4f, "конец содержимого учитывает блоки клипов");
+
+        // Пробел между блоками — это осознанная пауза, а не «доиграй предыдущий».
+        // Проверяем через ContentEnd и через удаление дорожки: сама поза
+        // применяется только на живом скелете (см. D3D_BONE_TEST).
+        doc.RemoveClipTrack(ct.Id);
+        Check(doc.ClipTracks.empty(), "дорожка клипов удаляется по идентификатору");
+    }
+
+    // --- Удаление ---
+    {
+        AnimationDocument doc;
+        const int keep = doc.EnsureTrack(cameraId, Property::Position).Id;
+        const int drop = doc.EnsureTrack(cubeId, Property::Position).Id;
+        doc.EnsureTrack(cubeId, Property::Rotation);
+        doc.EnsureClipTrack(cubeId);
+
+        doc.RemoveTrack(drop);
+        Check(doc.Tracks.size() == 2, "удалилась ровно одна дорожка");
+        Check(doc.TrackById(keep) != nullptr, "чужая дорожка уцелела");
+
+        // Удаление объекта из сцены обязано унести и дорожки свойств, и клипы:
+        // осиротевшая дорожка каждый кадр искала бы несуществующую сущность.
+        doc.RemoveTracksOf(cubeId);
+        Check(doc.Tracks.size() == 1, "дорожки свойств удалённого объекта убраны");
+        Check(doc.ClipTracks.empty(), "дорожка клипов удалённого объекта убрана");
+        Check(doc.TrackById(keep) != nullptr, "дорожки другого объекта не задеты");
+    }
+
+    // --- Применение: несколько объектов не путаются ---
+    {
+        AnimationDocument doc;
+        doc.EnsureTrack(cubeId, Property::Position).Channels[0].SetKey(0.0f, 11.0f, Interp::Linear);
+        doc.EnsureTrack(cameraId, Property::Position).Channels[0].SetKey(0.0f, 22.0f, Interp::Linear);
+        doc.EnsureTrack(lightId, Property::LightIntensity).Channels[0].SetKey(0.0f, 3.3f, Interp::Linear);
+        doc.Apply(*scene, 0.0f, true);
+        CheckNear(scene->Get(cubeId).GetTransform().Position.x, 11.0f, 1e-4f, "куб получил своё значение");
+        CheckNear(scene->Get(cameraId).GetTransform().Position.x, 22.0f, 1e-4f, "камера получила своё");
+        const LightComponent& lc =
+            scene->Registry().get<LightComponent>(scene->Get(lightId).Entity());
+        CheckNear(lc.Intensity, 3.3f, 1e-4f, "свет получил свою интенсивность");
+
+        // Дорожка объекта, которого в сцене нет, не должна ронять применение.
+        doc.EnsureTrack(4242, Property::Position).Channels[0].SetKey(0.0f, 1.0f);
+        doc.Apply(*scene, 0.0f, true);
+        Check(true, "дорожка несуществующего объекта не ломает применение");
+    }
+
+    // --- Круг через файл проекта ---
+    // Самое важное для дорожек: всё, что аниматор настроил, обязано пережить
+    // сохранение. Молча теряющееся поле выглядит как «программа сломалась
+    // сама по себе» — воспроизвести такое пользователь не сможет.
+    {
+        AnimationDocument doc;
+        doc.Fps = 30.0f;
+        doc.Duration = 9.0f;
+
+        Track& pos = doc.EnsureTrack(cubeId, Property::Position);
+        pos.Muted = true;
+        pos.Locked = true;
+        pos.Expanded = false;
+        pos.Channels[0].SetKey(0.0f, 1.0f, Interp::EaseInOut);
+        pos.Channels[0].SetKey(2.0f, 5.0f, Interp::Bezier);
+        pos.Channels[0].AtMutable(1).InTangent = 3.5f;
+        pos.Channels[0].AtMutable(1).OutTangent = -1.25f;
+        pos.Channels[2].SetKey(1.0f, 8.0f, Interp::Constant);
+
+        Track& bone = doc.EnsureTrack(cubeId, Property::BoneRotation, 4);
+        bone.JointName = "bone4";
+        bone.Channels[2].SetKey(0.5f, 45.0f, Interp::Linear);
+
+        Track& morph = doc.EnsureTrack(cubeId, Property::MorphWeight, 1);
+        morph.Channels[0].SetKey(0.0f, 0.25f, Interp::Linear);
+
+        ClipTrack& clips = doc.EnsureClipTrack(cameraId);
+        clips.Muted = true;
+        clips.Blocks.push_back(ClipBlock{"Walk", 2, 1.5f, 3.25f, 1.75f, 0.4f, false});
+
+        doc.Markers.push_back(Marker{"Смена плана", 4.0f, 0xFF00FF00u});
+
+        const fs::path path = fs::temp_directory_path() / "director3d_tracks.d3dproj";
+        std::string err;
+        Check(ProjectFile::Save(path.string(), *scene, doc, 0.0f, err), "проект с дорожками сохранён");
+
+        std::unique_ptr<Scene> loadedScene;
+        AnimationDocument loaded;
+        float playhead = 0.0f;
+        Check(ProjectFile::Load(path.string(), loadedScene, loaded, playhead, err),
+              "проект с дорожками загружен");
+
+        Check(loaded.Tracks.size() == doc.Tracks.size(), "число дорожек сохранилось");
+        const Track* lp = loaded.FindTrack(cubeId, Property::Position);
+        Check(lp != nullptr, "дорожка позиции нашлась после загрузки");
+        if (lp) {
+            Check(lp->Muted, "заглушка сохранилась");
+            Check(lp->Locked, "замок сохранился");
+            Check(!lp->Expanded, "свёрнутость дорожки сохранилась");
+            Check(lp->ChannelCount() == 3, "число каналов сохранилось");
+            Check(lp->Channels[0].Count() == 2, "число ключей сохранилось");
+            Check(lp->Channels[0].At(0).Mode == Interp::EaseInOut, "режим интерполяции сохранился");
+            Check(lp->Channels[0].At(1).Mode == Interp::Bezier, "режим Безье сохранился");
+            CheckNear(lp->Channels[0].At(1).InTangent, 3.5f, 1e-4f, "входная касательная сохранилась");
+            CheckNear(lp->Channels[0].At(1).OutTangent, -1.25f, 1e-4f, "выходная касательная сохранилась");
+            Check(lp->Channels[1].Empty(), "пустой канал остался пустым");
+            CheckNear(lp->Channels[2].At(0).Value, 8.0f, 1e-4f, "ключ третьего канала сохранился");
+        }
+
+        const Track* lb = loaded.FindTrack(cubeId, Property::BoneRotation, 4);
+        Check(lb != nullptr, "костная дорожка нашлась по кости после загрузки");
+        if (lb) Check(lb->JointName == "bone4", "имя кости сохранилось");
+
+        // Морф-дорожка адресуется номером цели ровно так же, как костная —
+        // номером кости. Потеря номера означает, что после открытия проекта
+        // мимика перестаёт применяться, причём молча.
+        const Track* lm = loaded.FindTrack(cubeId, Property::MorphWeight, 1);
+        Check(lm != nullptr, "морф-дорожка нашлась по номеру цели после загрузки");
+        if (lm) CheckNear(lm->Channels[0].At(0).Value, 0.25f, 1e-4f, "ключ веса блендшейпа сохранился");
+
+        Check(loaded.ClipTracks.size() == 1, "дорожка клипов сохранилась");
+        if (!loaded.ClipTracks.empty()) {
+            const ClipTrack& lc = loaded.ClipTracks[0];
+            Check(lc.Muted, "заглушка дорожки клипов сохранилась");
+            Check(lc.Blocks.size() == 1, "блок клипа сохранился");
+            if (!lc.Blocks.empty()) {
+                const ClipBlock& b = lc.Blocks[0];
+                Check(b.Name == "Walk", "имя блока сохранилось");
+                Check(b.ClipIndex == 2, "индекс клипа сохранился");
+                CheckNear(b.Start, 1.5f, 1e-4f, "начало блока сохранилось");
+                CheckNear(b.Duration, 3.25f, 1e-4f, "длительность блока сохранилась");
+                CheckNear(b.Speed, 1.75f, 1e-4f, "скорость блока сохранилась");
+                CheckNear(b.BlendIn, 0.4f, 1e-4f, "кросс-фейд блока сохранился");
+                Check(!b.Loop, "выключенный цикл блока сохранился");
+            }
+        }
+
+        Check(loaded.Markers.size() == 1, "метка сохранилась");
+        if (!loaded.Markers.empty()) {
+            Check(loaded.Markers[0].Name == "Смена плана", "имя метки сохранилось");
+            CheckNear(loaded.Markers[0].Time, 4.0f, 1e-4f, "время метки сохранилось");
+        }
+
+        // Счётчик идентификаторов обязан быть больше всех занятых: иначе
+        // следующая созданная дорожка получила бы чужой номер и склеилась с ней.
+        int maxId = 0;
+        for (const Track& t : loaded.Tracks) maxId = std::max(maxId, t.Id);
+        for (const ClipTrack& t : loaded.ClipTracks) maxId = std::max(maxId, t.Id);
+        Check(loaded.NextId() > maxId, "счётчик идентификаторов после загрузки свободен");
+        const int freshId = loaded.EnsureTrack(lightId, Property::LightIntensity).Id;
+        Check(loaded.TrackById(freshId) == &loaded.Tracks.back(),
+              "новая дорожка после загрузки не склеилась с существующей");
+
+        std::error_code ec;
+        fs::remove(path, ec);
+    }
+}
+
 } // namespace
 
 int RunSelfTest() {
@@ -759,6 +1071,7 @@ int RunSelfTest() {
     TestCurves();
     TestPlayback();
     TestDocument();
+    TestTracks();
     TestUndo();
     TestProjectIO();
     TestAudioDecoding();
