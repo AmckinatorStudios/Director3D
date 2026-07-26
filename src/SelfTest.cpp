@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <vector>
@@ -798,6 +799,243 @@ void TestBoneTracks() {
     fs::remove(path, ec);
 }
 
+// --- Монтажные дорожки -----------------------------------------------------
+
+// Дорожка клипов — это МОНТАЖ: из кусков готовых анимаций собирается
+// последовательность, и правила «какой кусок играет сейчас» решают всё.
+// Раньше здесь было пять проверок на «создалась и удалилась» — то есть само
+// монтажное поведение не проверялось вовсе.
+void TestClipTracks() {
+    Section("Монтажные дорожки");
+
+    int cubeId = 0, cameraId = 0, lightId = 0;
+    std::unique_ptr<Scene> scene = MakeHeadlessScene(cubeId, cameraId, lightId);
+
+    // --- Выбор активного блока ---
+    {
+        ClipTrack track;
+        track.Blocks.push_back(ClipBlock{"Idle", 0, 0.0f, 2.0f, 1.0f, 0.0f, true});
+        track.Blocks.push_back(ClipBlock{"Walk", 1, 3.0f, 2.0f, 1.0f, 0.0f, true});
+
+        const ClipBlock* b = AnimationDocument::ActiveBlockAt(track, 1.0f);
+        Check(b && b->Name == "Idle", "внутри первого блока играет он");
+        b = AnimationDocument::ActiveBlockAt(track, 4.0f);
+        Check(b && b->Name == "Walk", "внутри второго блока играет он");
+
+        // ПРОБЕЛ между блоками — это осознанная пауза, а не «доиграй
+        // предыдущий». Если бы здесь возвращался Idle, персонаж продолжал бы
+        // жить своей жизнью посреди пустого таймлайна.
+        Check(AnimationDocument::ActiveBlockAt(track, 2.5f) == nullptr,
+              "в пробеле между блоками не играет ничего");
+        Check(AnimationDocument::ActiveBlockAt(track, -1.0f) == nullptr,
+              "до первого блока не играет ничего");
+        Check(AnimationDocument::ActiveBlockAt(track, 10.0f) == nullptr,
+              "после последнего блока не играет ничего");
+
+        // Границы включительны с обеих сторон: на стыке двух соприкасающихся
+        // блоков кадр не должен проваливаться в тишину.
+        b = AnimationDocument::ActiveBlockAt(track, 0.0f);
+        Check(b && b->Name == "Idle", "начало блока принадлежит блоку");
+        b = AnimationDocument::ActiveBlockAt(track, 2.0f);
+        Check(b && b->Name == "Idle", "конец блока принадлежит блоку");
+
+        // ПЕРЕКРЫТИЕ: побеждает позже начавшийся — «положить поверх».
+        track.Blocks.push_back(ClipBlock{"Overlay", 2, 1.0f, 3.0f, 1.0f, 0.0f, true});
+        b = AnimationDocument::ActiveBlockAt(track, 1.5f);
+        Check(b && b->Name == "Overlay", "при перекрытии играет позже начавшийся блок");
+        b = AnimationDocument::ActiveBlockAt(track, 0.5f);
+        Check(b && b->Name == "Idle", "до перекрытия играет прежний блок");
+
+        // Порядок в векторе не должен влиять на результат: блоки приходят из
+        // файла и после перетаскивания мышью в произвольном порядке.
+        ClipTrack shuffled;
+        shuffled.Blocks.push_back(ClipBlock{"Overlay", 2, 1.0f, 3.0f, 1.0f, 0.0f, true});
+        shuffled.Blocks.push_back(ClipBlock{"Idle", 0, 0.0f, 2.0f, 1.0f, 0.0f, true});
+        const ClipBlock* s1 = AnimationDocument::ActiveBlockAt(shuffled, 1.5f);
+        Check(s1 && s1->Name == "Overlay", "порядок блоков в списке не меняет выбор");
+    }
+
+    // --- Несколько персонажей: дорожки независимы ---
+    {
+        AnimationDocument doc;
+        ClipTrack& a = doc.EnsureClipTrack(cubeId);
+        ClipTrack& b = doc.EnsureClipTrack(cameraId);
+        a.Blocks.push_back(ClipBlock{"A", 0, 0.0f, 5.0f, 1.0f, 0.0f, true});
+        b.Blocks.push_back(ClipBlock{"B", 1, 6.0f, 2.0f, 1.0f, 0.0f, true});
+        Check(doc.ClipTracks.size() == 2, "у двух объектов две дорожки клипов");
+        Check(doc.FindClipTrack(cubeId)->Blocks[0].Name == "A", "первая дорожка своя");
+        Check(doc.FindClipTrack(cameraId)->Blocks[0].Name == "B", "вторая дорожка своя");
+        Check(doc.FindClipTrack(lightId) == nullptr, "у третьего объекта дорожки нет");
+        // Конец содержимого — по самому позднему блоку ЛЮБОЙ дорожки.
+        CheckNear(doc.ContentEnd(), 8.0f, 1e-4f, "конец содержимого по позднейшему блоку");
+    }
+
+    // --- Заглушка дорожки клипов ---
+    {
+        AnimationDocument doc;
+        ClipTrack& t = doc.EnsureClipTrack(cubeId);
+        t.Blocks.push_back(ClipBlock{"A", 0, 0.0f, 5.0f, 1.0f, 0.0f, true});
+        t.Muted = true;
+        // Заглушенная дорожка не применяется, но остаётся в документе и в
+        // подсчёте длительности: она никуда не делась, её просто не слышно.
+        CheckNear(doc.ContentEnd(), 5.0f, 1e-4f, "заглушенная дорожка учитывается в длительности");
+        doc.Apply(*scene, 1.0f, true);
+        Check(true, "применение с заглушенной дорожкой не падает");
+    }
+
+    // --- Навигация по границам блоков ---
+    // Кнопки «предыдущий/следующий ключ» на транспорте обязаны видеть монтаж:
+    // границы блоков — это те точки, куда аниматор прыгает чаще всего.
+    {
+        AnimationDocument doc;
+        ClipTrack& t = doc.EnsureClipTrack(cubeId);
+        t.Blocks.push_back(ClipBlock{"A", 0, 1.0f, 2.0f, 1.0f, 0.0f, true});
+        float out = 0.0f;
+        Check(doc.NextKeyTime(0.0f, out) && std::fabs(out - 1.0f) < 1e-4f,
+              "следующая точка — начало блока");
+        Check(doc.NextKeyTime(1.5f, out) && std::fabs(out - 3.0f) < 1e-4f,
+              "следующая точка — конец блока");
+        Check(doc.PrevKeyTime(5.0f, out) && std::fabs(out - 3.0f) < 1e-4f,
+              "предыдущая точка — конец блока");
+    }
+
+    // --- Круг через файл со всеми полями блока ---
+    {
+        AnimationDocument doc;
+        doc.Fps = 25.0f;
+        ClipTrack& t = doc.EnsureClipTrack(cubeId);
+        t.Muted = true;
+        t.Blocks.push_back(ClipBlock{"Walk", 3, 1.25f, 4.5f, 0.75f, 0.35f, false});
+        t.Blocks.push_back(ClipBlock{"Run", 4, 6.0f, 2.0f, 1.5f, 0.1f, true});
+
+        const fs::path path = fs::temp_directory_path() / "director3d_clips.d3dproj";
+        std::string err;
+        Check(ProjectFile::Save(path.string(), *scene, doc, 0.0f, err), "монтаж сохранён");
+
+        std::unique_ptr<Scene> loadedScene;
+        AnimationDocument loaded;
+        float playhead = 0.0f;
+        Check(ProjectFile::Load(path.string(), loadedScene, loaded, playhead, err), "монтаж загружен");
+        Check(loaded.ClipTracks.size() == 1, "дорожка клипов одна");
+        if (!loaded.ClipTracks.empty()) {
+            const ClipTrack& lt = loaded.ClipTracks[0];
+            Check(lt.Muted, "заглушка дорожки сохранилась");
+            Check(lt.Blocks.size() == 2, "оба блока сохранились");
+            if (lt.Blocks.size() == 2) {
+                Check(lt.Blocks[0].Name == "Walk", "имя первого блока");
+                Check(lt.Blocks[0].ClipIndex == 3, "индекс клипа первого блока");
+                CheckNear(lt.Blocks[0].Start, 1.25f, 1e-4f, "начало первого блока");
+                CheckNear(lt.Blocks[0].Duration, 4.5f, 1e-4f, "длительность первого блока");
+                CheckNear(lt.Blocks[0].Speed, 0.75f, 1e-4f, "скорость первого блока");
+                CheckNear(lt.Blocks[0].BlendIn, 0.35f, 1e-4f, "кросс-фейд первого блока");
+                Check(!lt.Blocks[0].Loop, "выключенный цикл первого блока");
+                Check(lt.Blocks[1].Loop, "включённый цикл второго блока");
+                CheckNear(lt.Blocks[1].Speed, 1.5f, 1e-4f, "скорость второго блока");
+            }
+            // Выбор активного блока после загрузки обязан работать так же.
+            const ClipBlock* b = AnimationDocument::ActiveBlockAt(lt, 2.0f);
+            Check(b && b->Name == "Walk", "после загрузки активный блок определяется");
+        }
+        std::error_code ec;
+        fs::remove(path, ec);
+    }
+}
+
+// --- Звуковая дорожка ------------------------------------------------------
+
+void TestAudioTrackTimeline() {
+    Section("Звуковая дорожка");
+
+    int cubeId = 0, cameraId = 0, lightId = 0;
+    std::unique_ptr<Scene> scene = MakeHeadlessScene(cubeId, cameraId, lightId);
+
+    // Пишем настоящий WAV на диск: дорожка обязана уметь читать файл, а не
+    // только буфер, и длительность считается именно из него.
+    const fs::path wav = fs::temp_directory_path() / "director3d_track.wav";
+    {
+        const int rate = 8000, seconds = 2;
+        const int samples = rate * seconds;
+        std::vector<unsigned char> bytes;
+        auto put32 = [&](unsigned int v) {
+            for (int i = 0; i < 4; ++i) bytes.push_back((unsigned char)((v >> (8 * i)) & 0xFF));
+        };
+        auto put16 = [&](unsigned short v) {
+            bytes.push_back((unsigned char)(v & 0xFF));
+            bytes.push_back((unsigned char)((v >> 8) & 0xFF));
+        };
+        const unsigned int dataBytes = (unsigned int)samples * 2u;
+        for (char c : std::string("RIFF")) bytes.push_back((unsigned char)c);
+        put32(36u + dataBytes);
+        for (char c : std::string("WAVEfmt ")) bytes.push_back((unsigned char)c);
+        put32(16u); put16(1); put16(1); put32((unsigned int)rate);
+        put32((unsigned int)rate * 2u); put16(2); put16(16);
+        for (char c : std::string("data")) bytes.push_back((unsigned char)c);
+        put32(dataBytes);
+        for (int i = 0; i < samples; ++i) {
+            // Тишина в первой половине, синус во второй — так видно, что
+            // огибающая привязана ко ВРЕМЕНИ, а не размазана по всей дорожке.
+            const float t = (float)i / (float)rate;
+            const float v = t < 1.0f ? 0.0f : std::sin(t * 440.0f * 6.28318f) * 0.8f;
+            put16((unsigned short)(short)(v * 32767.0f));
+        }
+        std::ofstream out(wav, std::ios::binary);
+        out.write((const char*)bytes.data(), (std::streamsize)bytes.size());
+    }
+
+    AnimationDocument doc;
+    Check(doc.Audio.Load(wav.string()), "звуковой файл загрузился");
+    Check(doc.Audio.Loaded(), "дорожка считается заполненной");
+    Check(doc.Audio.HasWaveform(), "огибающая построена");
+    CheckNear(doc.Audio.Length(), 2.0f, 0.05f, "длительность звука определена");
+
+    // Огибающая привязана ко времени: в тишине пики около нуля, в сигнале — нет.
+    const std::vector<AudioTrack::Peak> quiet = doc.Audio.Sample(0.0f, 0.9f, 32);
+    const std::vector<AudioTrack::Peak> loud = doc.Audio.Sample(1.1f, 1.9f, 32);
+    Check(!quiet.empty() && !loud.empty(), "огибающая берётся на обоих участках");
+    float quietMax = 0.0f, loudMax = 0.0f;
+    for (const AudioTrack::Peak& p : quiet) quietMax = std::max(quietMax, std::fabs(p.Max));
+    for (const AudioTrack::Peak& p : loud) loudMax = std::max(loudMax, std::fabs(p.Max));
+    Check(quietMax < 0.05f, "в тишине огибающая около нуля");
+    Check(loudMax > 0.3f, "в сигнале огибающая заметна");
+
+    // Смещение двигает звук по таймлайну и обязано попадать в длительность.
+    doc.Audio.Offset = 3.0f;
+    CheckNear(doc.ContentEnd(), 5.0f, 0.05f, "смещение звука учтено в длительности ролика");
+
+    // Круг через файл: путь, смещение, громкость и заглушка.
+    doc.Audio.Volume = 0.42f;
+    doc.Audio.Muted = true;
+    const fs::path proj = fs::temp_directory_path() / "director3d_audio.d3dproj";
+    std::string err;
+    Check(ProjectFile::Save(proj.string(), *scene, doc, 0.0f, err), "проект со звуком сохранён");
+
+    std::unique_ptr<Scene> loadedScene;
+    AnimationDocument loaded;
+    float playhead = 0.0f;
+    Check(ProjectFile::Load(proj.string(), loadedScene, loaded, playhead, err),
+          "проект со звуком загружен");
+    Check(loaded.Audio.Loaded(), "звук нашёлся после загрузки");
+    CheckNear(loaded.Audio.Offset, 3.0f, 1e-4f, "смещение звука сохранилось");
+    CheckNear(loaded.Audio.Volume, 0.42f, 1e-4f, "громкость сохранилась");
+    Check(loaded.Audio.Muted, "заглушка звука сохранилась");
+
+    // Пропавший файл не должен ронять открытие проекта: звук мог переехать, а
+    // терять из-за этого всю анимацию нельзя.
+    std::error_code ec;
+    fs::remove(wav, ec);
+    std::unique_ptr<Scene> againScene;
+    AnimationDocument again;
+    Check(ProjectFile::Load(proj.string(), againScene, again, playhead, err),
+          "проект открывается и без звукового файла");
+    Check(!again.Audio.HasWaveform(), "у пропавшего файла нет огибающей");
+    fs::remove(proj, ec);
+
+    // Очистка дорожки.
+    doc.Audio.Clear();
+    Check(!doc.Audio.Loaded(), "дорожка очищается");
+    Check(!doc.Audio.HasWaveform(), "огибающая очищается вместе с ней");
+}
+
 // --- Системные диалоги -----------------------------------------------------
 
 void TestFileDialog() {
@@ -914,6 +1152,38 @@ void TestTracks() {
         // Число каналов диктует свойство, а не вызывающий.
         Check(doc.EnsureTrack(cubeId, Property::Position).ChannelCount() == 3, "у вектора три канала");
         Check(doc.EnsureTrack(lightId, Property::LightIntensity).ChannelCount() == 1, "у скаляра один канал");
+    }
+
+    // --- Ссылки на дорожки переживают добавление новых ---
+    // Это НЕ формальность. EnsureTrack отдаёт ссылку, и весь код инструмента
+    // построен на «завёл дорожку — пишу в неё». Если хранилище двигает элементы
+    // при добавлении, такая ссылка повисает, а код выглядит совершенно
+    // нормально и компилируется без замечаний. Ровно этот случай уронил
+    // самотест сегфолтом, когда проверка монтажных дорожек завела две подряд.
+    {
+        AnimationDocument doc;
+        Track& first = doc.EnsureTrack(cubeId, Property::Position);
+        first.Channels[0].SetKey(0.0f, 1.0f, Interp::Linear);
+        const int firstId = first.Id;
+
+        // Заводим ещё десяток — с вектором это гарантированно перевыделение.
+        for (int i = 0; i < 10; ++i) doc.EnsureTrack(1000 + i, Property::Position);
+
+        // Пишем через СТАРУЮ ссылку: она обязана указывать на ту же дорожку.
+        first.Channels[0].SetKey(1.0f, 2.0f, Interp::Linear);
+        Check(first.Id == firstId, "ссылка на дорожку осталась той же после добавления других");
+        const Track* found = doc.TrackById(firstId);
+        Check(found == &first, "ссылка и поиск по идентификатору дают один объект");
+        Check(found && found->Channels[0].Count() == 2,
+              "запись через старую ссылку попала в нужную дорожку");
+
+        // То же для дорожек клипов.
+        ClipTrack& clipA = doc.EnsureClipTrack(cubeId);
+        doc.EnsureClipTrack(cameraId);
+        doc.EnsureClipTrack(lightId);
+        clipA.Blocks.push_back(ClipBlock{"A", 0, 0.0f, 1.0f, 1.0f, 0.0f, true});
+        Check(doc.FindClipTrack(cubeId) == &clipA, "ссылка на дорожку клипов тоже пережила добавление");
+        Check(doc.FindClipTrack(cubeId)->Blocks.size() == 1, "блок лёг в нужную дорожку");
     }
 
     // --- Подындекс: кости и блендшейпы ---
@@ -1278,6 +1548,8 @@ int RunSelfTest() {
     TestDocument();
     TestTracks();
     TestFileDialog();
+    TestClipTracks();
+    TestAudioTrackTimeline();
     TestUndo();
     TestProjectIO();
     TestAudioDecoding();

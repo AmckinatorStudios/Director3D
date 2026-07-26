@@ -428,11 +428,7 @@ bool AnimationDocument::NextKeyTime(float from, float& out) const {
 //  Применение документа к сцене
 // ============================================================================
 
-namespace {
-
-// Блок клипа, активный в момент time (последний начавшийся из перекрывающихся —
-// так «положить блок поверх» работает как в любом NLE). nullptr — тишина.
-const ClipBlock* ActiveBlock(const ClipTrack& track, float time) {
+const ClipBlock* AnimationDocument::ActiveBlockAt(const ClipTrack& track, float time) {
     const ClipBlock* best = nullptr;
     for (const ClipBlock& b : track.Blocks) {
         if (time < b.Start || time > b.Start + b.Duration) continue;
@@ -440,8 +436,6 @@ const ClipBlock* ActiveBlock(const ClipTrack& track, float time) {
     }
     return best;
 }
-
-} // namespace
 
 void AnimationDocument::Apply(Scene& scene, float time, bool seeking) const {
     // ПОРЯДОК ВАЖЕН: сначала клипы, потом свойства.
@@ -463,7 +457,7 @@ void AnimationDocument::Apply(Scene& scene, float time, bool seeking) const {
         // привязки скелета; до этого управлять проигрывателем нечем.
         if (!anim || !anim->Ready) continue;
 
-        const ClipBlock* block = ActiveBlock(track, time);
+        const ClipBlock* block = ActiveBlockAt(track, time);
         if (!block) {
             // Вне блоков персонаж замирает в текущей позе — управляемая пауза
             // лучше, чем «продолжает жить сам по себе» посреди пустого таймлайна.
