@@ -3,6 +3,8 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <string>
+#include <vector>
 
 #include "imgui.h"
 #include "imgui_stdlib.h"
@@ -11,6 +13,7 @@
 #include "render/VideoWriter.h"
 #include "sage/core/Version.h"
 #include "ui/Icons.h"
+#include "ui/FileDialog.h"
 #include "ui/Theme.h"
 
 namespace fs = std::filesystem;
@@ -34,13 +37,51 @@ const char* TitleOf(Dialog dialog) {
     }
 }
 
+// Описание системного диалога для кнопки «Обзор». Пустой Title — кнопки нет.
+struct BrowseSpec {
+    const char* Title = nullptr;
+    std::vector<filedialog::Filter> Filters;
+    bool Save = false;
+    std::string SuggestedName;
+};
+
 // Поле ввода пути с подсказкой о состоянии файла: зелёная — файл есть, серая —
 // будет создан, красная — путь заведомо нерабочий. Пользователь видит проблему
-// ДО нажатия кнопки, а не в виде ошибки после.
-void PathField(const char* label, char* buffer, size_t size, bool mustExist) {
+// ДО нажатия кнопки, а не в виде ошибки после. Ввод строкой остаётся всегда:
+// системный диалог — это удобство поверх него, а не замена ему.
+void PathField(const char* label, char* buffer, size_t size, bool mustExist,
+               const BrowseSpec& browse = {}) {
     ImGui::TextUnformatted(label);
-    ImGui::SetNextItemWidth(-1.0f);
+
+    // Кнопка «Обзор» есть только если системному диалогу есть чем открыться.
+    // Показывать неработающую кнопку хуже, чем не показывать никакой: ввод
+    // строкой остаётся рабочим путём, а нажатие в пустоту выглядит поломкой.
+    const bool browsable = browse.Title && filedialog::Available();
+    const float browseWidth = browsable ? 90.0f : 0.0f;
+    ImGui::SetNextItemWidth(browsable ? -(browseWidth + ImGui::GetStyle().ItemSpacing.x) : -1.0f);
     ImGui::InputText("##path", buffer, size);
+
+    if (browsable) {
+        ImGui::SameLine();
+        if (ImGui::Button("Обзор…", ImVec2(browseWidth, 0.0f))) {
+            // Стартовый каталог — тот, что уже введён: диалог должен
+            // открываться там, где человек работает, а не в домашней папке.
+            std::error_code ec;
+            fs::path start(buffer);
+            if (!start.empty() && !fs::is_directory(start, ec)) start = start.parent_path();
+            std::string picked;
+            const bool got = browse.Save
+                ? filedialog::SaveFile(browse.Title, browse.Filters, start.string(),
+                                       browse.SuggestedName, picked)
+                : filedialog::OpenFile(browse.Title, browse.Filters, start.string(), picked);
+            if (got) {
+                std::snprintf(buffer, size, "%s", picked.c_str());
+            }
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Открыть системный диалог (%s)", filedialog::Backend().c_str());
+        }
+    }
 
     const fs::path path(buffer);
     std::error_code ec;
@@ -152,7 +193,9 @@ void DialogsPanel::DrawNewProject(DirectorHost& host) {
 void DialogsPanel::DrawOpenProject(DirectorHost& host) {
     if (!BeginModal(TitleOf(Dialog::OpenProject))) return;
 
-    PathField("Путь к файлу проекта (.d3dproj)", m_path, sizeof(m_path), /*mustExist=*/true);
+    PathField("Путь к файлу проекта (.d3dproj)", m_path, sizeof(m_path), /*mustExist=*/true,
+              BrowseSpec{"Открыть проект Director 3D",
+                         {{"Проекты Director 3D", "*.d3dproj"}}, false, ""});
     if (!m_error.empty()) {
         ImGui::PushStyleColor(ImGuiCol_Text, Theme::Colors::Record);
         ImGui::TextWrapped("%s", m_error.c_str());
@@ -197,7 +240,9 @@ void DialogsPanel::DrawOpenProject(DirectorHost& host) {
 void DialogsPanel::DrawSaveProjectAs(DirectorHost& host) {
     if (!BeginModal(TitleOf(Dialog::SaveProjectAs))) return;
 
-    PathField("Куда сохранить (.d3dproj)", m_path, sizeof(m_path), /*mustExist=*/false);
+    PathField("Куда сохранить (.d3dproj)", m_path, sizeof(m_path), /*mustExist=*/false,
+              BrowseSpec{"Сохранить проект как",
+                         {{"Проекты Director 3D", "*.d3dproj"}}, true, "project.d3dproj"});
     if (!m_error.empty()) {
         ImGui::PushStyleColor(ImGuiCol_Text, Theme::Colors::Record);
         ImGui::TextWrapped("%s", m_error.c_str());
@@ -236,7 +281,10 @@ void DialogsPanel::DrawImportAsset(DirectorHost& host) {
                        ".obj — как статическая геометрия. Звуковые файлы становятся звуковой "
                        "дорожкой ролика.");
     ImGui::Spacing();
-    PathField("Путь к файлу", m_path, sizeof(m_path), /*mustExist=*/true);
+    PathField("Путь к файлу", m_path, sizeof(m_path), /*mustExist=*/true,
+              BrowseSpec{"Импорт ассета",
+                         {{"Модели и звук", "*.glb *.gltf *.obj *.wav *.mp3 *.flac"},
+                          {"Все файлы", "*"}}, false, ""});
     if (!m_error.empty()) {
         ImGui::PushStyleColor(ImGuiCol_Text, Theme::Colors::Record);
         ImGui::TextWrapped("%s", m_error.c_str());
@@ -275,7 +323,9 @@ void DialogsPanel::DrawExportScene(DirectorHost& host) {
     ImGui::TextWrapped("Сохраняет ТОЛЬКО сцену в формате движка (.sage) — без анимации. "
                        "Такой файл открывается редактором SAGE и грузится в игру.");
     ImGui::Spacing();
-    PathField("Куда сохранить (.sage)", m_path, sizeof(m_path), /*mustExist=*/false);
+    PathField("Куда сохранить (.sage)", m_path, sizeof(m_path), /*mustExist=*/false,
+              BrowseSpec{"Экспорт сцены в формат движка",
+                         {{"Сцены SAGE", "*.sage"}}, true, "scene.sage"});
     if (!m_error.empty()) {
         ImGui::PushStyleColor(ImGuiCol_Text, Theme::Colors::Record);
         ImGui::TextWrapped("%s", m_error.c_str());

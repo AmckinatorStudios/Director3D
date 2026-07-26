@@ -94,6 +94,7 @@ add_executable(Director3D
     src/render/SequenceExporter.cpp
     src/render/VideoWriter.cpp
     src/ui/Theme.cpp
+    src/ui/FileDialog.cpp
     src/ui/Icons.cpp
     src/ui/panels/MenuBarPanel.cpp
     src/ui/panels/ToolbarPanel.cpp

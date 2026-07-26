@@ -16,6 +16,7 @@
 #include "project/Project.h"
 #include "project/UndoStack.h"
 #include "render/VideoWriter.h"
+#include "ui/FileDialog.h"
 #include "sage/scene/Components.h"
 #include "sage/scene/Scene.h"
 #include "sage/scene/Transform.h"
@@ -797,6 +798,79 @@ void TestBoneTracks() {
     fs::remove(path, ec);
 }
 
+// --- Системные диалоги -----------------------------------------------------
+
+void TestFileDialog() {
+    Section("Системные диалоги");
+
+    // Экранирование — единственное место здесь, где ошибка опасна, а не
+    // неудобна: путь и имя проекта попадают в командную строку оболочки, и
+    // пробел без кавычек ломает команду, а кавычка позволяет дописать к ней
+    // произвольный вызов.
+    //
+    // Проверяем не ВИД строки, а её ПОВЕДЕНИЕ: подставляем в настоящую команду
+    // и смотрим, что оболочка вернула ровно то, что мы ей дали, и ничего не
+    // выполнила. Сравнение с эталонной строкой проверяло бы наши же
+    // представления о правилах цитирования, а не сами правила.
+    auto roundTrip = [](const std::string& value) {
+        const std::string cmd = "printf '%s' " + filedialog::QuoteForShell(value);
+        std::FILE* pipe = popen(cmd.c_str(), "r");
+        if (!pipe) return std::string("<не запустилось>");
+        std::string out;
+        char buf[512];
+        while (std::fgets(buf, sizeof(buf), pipe)) out += buf;
+        pclose(pipe);
+        return out;
+    };
+
+    const char* cases[] = {
+        "/home/user/simple.d3dproj",
+        "/home/user/с пробелами/мой проект.d3dproj",
+        "/tmp/it's mine.d3dproj",                 // одинарная кавычка
+        "/tmp/say \"hi\".d3dproj",                // двойная кавычка
+        "/tmp/$HOME.d3dproj",                     // подстановка переменной
+        "/tmp/`id`.d3dproj",                      // обратные кавычки
+        "/tmp/$(id).d3dproj",                     // подстановка команды
+        "/tmp/a;rm -rf x.d3dproj",                // разделитель команд
+        "/tmp/a|b&c.d3dproj",                     // конвейер и фон
+        "/tmp/звёзды*и?знаки[].d3dproj",          // шаблоны имён
+    };
+    for (const char* value : cases) {
+        const std::string got = roundTrip(value);
+        if (got != value) {
+            std::printf("  ПРОВАЛ: экранирование исказило путь\n    дано:     %s\n    получено: %s\n",
+                        value, got.c_str());
+            ++g_failed;
+        } else {
+            ++g_passed;
+        }
+    }
+
+    // Отдельно и явно: подстановка команды НЕ выполняется. Признак — в ответе
+    // остался САМ СИНТАКСИС подстановки. Искать в ответе слово-маркер нельзя:
+    // оно есть и во входной строке, поэтому его наличие не отличает
+    // «не выполнилось» от «выполнилось» — на этом первая версия проверки и
+    // провалилась.
+    const std::string dangerous = roundTrip("/tmp/$(echo ВЫПОЛНЕНО).d3dproj");
+    Check(dangerous.find("$(echo") != std::string::npos,
+          "подстановка команды в пути осталась текстом, а не выполнилась");
+    const std::string backticks = roundTrip("/tmp/`echo ВЫПОЛНЕНО`.d3dproj");
+    Check(backticks.find('`') != std::string::npos,
+          "обратные кавычки в пути остались текстом, а не выполнились");
+
+    // Доступность и имя утилиты обязаны быть согласованы: кнопка «Обзор»
+    // показывается по Available(), а подсказка печатает Backend().
+    Check(filedialog::Available() == !filedialog::Backend().empty(),
+          "доступность диалога и имя утилиты согласованы");
+    // Без утилиты вызов обязан честно вернуть false, а не подвиснуть и не
+    // испортить выходную строку.
+    if (!filedialog::Available()) {
+        std::string out = "не трогать";
+        Check(!filedialog::OpenFile("Тест", {}, "", out), "без утилиты диалог не открывается");
+        Check(out == "не трогать", "неудачный диалог не портит результат");
+    }
+}
+
 // --- Дорожки ---------------------------------------------------------------
 
 // Дорожка — центральная сущность инструмента: всё, что аниматор делает, в итоге
@@ -1119,6 +1193,7 @@ int RunSelfTest() {
     TestPlayback();
     TestDocument();
     TestTracks();
+    TestFileDialog();
     TestUndo();
     TestProjectIO();
     TestAudioDecoding();
