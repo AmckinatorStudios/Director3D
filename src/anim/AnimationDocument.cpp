@@ -112,6 +112,12 @@ void AnimationDocument::RemoveTracksOf(int targetId) {
     ClipTracks.erase(std::remove_if(ClipTracks.begin(), ClipTracks.end(),
                                     [targetId](const ClipTrack& t) { return t.TargetId == targetId; }),
                      ClipTracks.end());
+    // Склейки на удалённую камеру убираем здесь же. Оставить их означало бы
+    // хранить в монтаже ссылки в пустоту: CameraAt отдал бы запасную камеру,
+    // и склейка на таймлайне выглядела бы работающей, ничего не переключая.
+    Cameras.Cuts.erase(std::remove_if(Cameras.Cuts.begin(), Cameras.Cuts.end(),
+                                      [targetId](const CameraCut& c) { return c.CameraId == targetId; }),
+                       Cameras.Cuts.end());
 }
 
 // ============================================================================
@@ -138,6 +144,68 @@ void AnimationDocument::RemoveClipTrack(int id) {
     ClipTracks.erase(std::remove_if(ClipTracks.begin(), ClipTracks.end(),
                                     [id](const ClipTrack& t) { return t.Id == id; }),
                      ClipTracks.end());
+}
+
+// ============================================================================
+//  Монтаж камер
+// ============================================================================
+
+namespace {
+// Две склейки считаются одной, если расходятся меньше чем на это. Величина
+// заметно мельче кадра даже при 240 fps: попасть в неё случайной перетаской
+// нельзя, а вот кликнуть по уже существующей склейке и получить вторую поверх
+// первой — легко, и тогда одна из них навсегда осталась бы недостижимой.
+constexpr float kCutEpsilon = 1e-4f;
+} // namespace
+
+int AnimationDocument::CutIndexAt(float time) const {
+    if (Cameras.Muted) return -1;
+    int found = -1;
+    for (size_t i = 0; i < Cameras.Cuts.size(); ++i) {
+        if (Cameras.Cuts[i].Time > time + kCutEpsilon) break; // список отсортирован
+        found = (int)i;
+    }
+    return found;
+}
+
+int AnimationDocument::CameraAt(float time, int fallback) const {
+    const int index = CutIndexAt(time);
+    if (index < 0) return fallback;
+    const int id = Cameras.Cuts[(size_t)index].CameraId;
+    // Камеру могли удалить из сцены уже после того, как склейку поставили.
+    // Ронять рендер из-за этого нельзя — возвращаем ручной выбор.
+    return id >= 0 ? id : fallback;
+}
+
+int AnimationDocument::SetCut(float time, int cameraId) {
+    for (size_t i = 0; i < Cameras.Cuts.size(); ++i) {
+        if (std::abs(Cameras.Cuts[i].Time - time) <= kCutEpsilon) {
+            Cameras.Cuts[i].CameraId = cameraId;
+            return (int)i;
+        }
+    }
+    CameraCut cut;
+    cut.Time = std::max(0.0f, time);
+    cut.CameraId = cameraId;
+    Cameras.Cuts.push_back(cut);
+    std::stable_sort(Cameras.Cuts.begin(), Cameras.Cuts.end(),
+                     [](const CameraCut& a, const CameraCut& b) { return a.Time < b.Time; });
+    for (size_t i = 0; i < Cameras.Cuts.size(); ++i) {
+        if (std::abs(Cameras.Cuts[i].Time - cut.Time) <= kCutEpsilon) return (int)i;
+    }
+    return (int)Cameras.Cuts.size() - 1;
+}
+
+void AnimationDocument::RemoveCut(int index) {
+    if (index < 0 || index >= (int)Cameras.Cuts.size()) return;
+    Cameras.Cuts.erase(Cameras.Cuts.begin() + index);
+}
+
+int AnimationDocument::MoveCut(int index, float time) {
+    if (index < 0 || index >= (int)Cameras.Cuts.size()) return index;
+    const int camera = Cameras.Cuts[(size_t)index].CameraId;
+    Cameras.Cuts.erase(Cameras.Cuts.begin() + index);
+    return SetCut(std::max(0.0f, time), camera);
 }
 
 // ============================================================================
@@ -535,6 +603,7 @@ float AnimationDocument::ContentEnd() const {
     for (const ClipTrack& track : ClipTracks) {
         for (const ClipBlock& b : track.Blocks) end = std::max(end, b.Start + b.Duration);
     }
+    for (const CameraCut& c : Cameras.Cuts) end = std::max(end, c.Time);
     for (const Marker& m : Markers) end = std::max(end, m.Time);
     if (Audio.Loaded()) end = std::max(end, Audio.Offset + Audio.Length());
     return end;
@@ -543,6 +612,7 @@ float AnimationDocument::ContentEnd() const {
 void AnimationDocument::ClearContent() {
     Tracks.clear();
     ClipTracks.clear();
+    Cameras = CameraTrack{};
     Markers.clear();
     Audio.Clear();
     m_nextId = 1;

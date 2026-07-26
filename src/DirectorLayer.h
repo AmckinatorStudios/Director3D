@@ -142,6 +142,9 @@ public:
     void PickAtStage(float u, float v, bool additive) override;
     int ActiveCameraId() const override { return m_activeCameraId; }
     void SetActiveCameraId(int id) override { m_activeCameraId = id; }
+    int EffectiveCameraId() const override {
+        return m_doc.CameraAt(m_playback.Time(), m_activeCameraId);
+    }
 
     // --- DirectorHost: режим ---
     bool& SimpleMode() override { return m_simpleMode; }

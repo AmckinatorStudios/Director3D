@@ -1110,6 +1110,142 @@ void TestFileDialog() {
     }
 }
 
+// --- Монтаж камер ----------------------------------------------------------
+
+// Дорожка монтажа — единственное место, где инструмент отвечает на вопрос
+// «чем снимаем этот кадр», и ошибка здесь не выглядит как ошибка: ролик просто
+// снят не той камерой, и понять это можно только пересмотрев его целиком.
+// Поэтому правила проверяются поимённо, а не «в целом работает».
+void TestCameraTrack() {
+    Section("Монтаж камер");
+
+    AnimationDocument doc;
+    doc.Duration = 10.0f;
+    const int kManual = 100, kCamA = 1, kCamB = 2, kCamC = 3;
+
+    // Пустая дорожка не должна ничего решать за человека.
+    Check(doc.CameraAt(0.0f, kManual) == kManual, "без склеек снимает ручная камера");
+    Check(doc.CameraAt(5.0f, kManual) == kManual, "без склеек это верно на всём ролике");
+    Check(doc.CutIndexAt(3.0f) == -1, "без склеек активного плана нет");
+
+    doc.SetCut(2.0f, kCamA);
+    doc.SetCut(6.0f, kCamB);
+
+    // Главное правило: ДО первой склейки работает ручной выбор. Обратное
+    // («берём камеру первой склейки») выглядело бы как склейка, которую никто
+    // не ставил, и именно на начале ролика это дороже всего.
+    Check(doc.CameraAt(0.0f, kManual) == kManual, "до первой склейки — ручная камера");
+    Check(doc.CameraAt(1.99f, kManual) == kManual, "и вплотную к первой склейке тоже");
+    Check(doc.CameraAt(2.0f, kManual) == kCamA, "на склейке план уже новый");
+    Check(doc.CameraAt(4.0f, kManual) == kCamA, "между склейками план держится");
+    Check(doc.CameraAt(6.0f, kManual) == kCamB, "вторая склейка переключает");
+    Check(doc.CameraAt(100.0f, kManual) == kCamB, "последний план тянется до конца");
+
+    // Склейки вносятся не по порядку — список обязан остаться отсортированным,
+    // иначе поиск плана по времени молча вернёт не тот.
+    doc.SetCut(4.0f, kCamC);
+    Check(doc.Cameras.Cuts.size() == 3, "склейка вставлена");
+    bool sorted = true;
+    for (size_t i = 1; i < doc.Cameras.Cuts.size(); ++i) {
+        if (doc.Cameras.Cuts[i - 1].Time > doc.Cameras.Cuts[i].Time) sorted = false;
+    }
+    Check(sorted, "список склеек отсортирован по времени");
+    Check(doc.CameraAt(5.0f, kManual) == kCamC, "вставленная в середину склейка действует");
+
+    // Повторная склейка на том же времени меняет камеру, а не заводит вторую:
+    // иначе одна из двух навсегда осталась бы недостижимой мышью.
+    const size_t before = doc.Cameras.Cuts.size();
+    doc.SetCut(4.0f, kCamB);
+    Check(doc.Cameras.Cuts.size() == before, "склейка на занятом времени не дублируется");
+    Check(doc.CameraAt(5.0f, kManual) == kCamB, "ей сменилась камера");
+
+    // Перетаскивание через соседнюю склейку меняет ИНДЕКС — MoveCut обязан
+    // вернуть новый, иначе следующее движение мыши потащит чужую склейку.
+    doc.Cameras.Cuts.clear();
+    doc.SetCut(1.0f, kCamA);
+    doc.SetCut(3.0f, kCamB);
+    const int moved = doc.MoveCut(0, 5.0f); // тащим первую за вторую
+    Check(moved == 1, "после перестановки индекс склейки обновился");
+    Check(doc.Cameras.Cuts[(size_t)moved].CameraId == kCamA, "и это та же склейка");
+    // Склейки теперь [3 -> B, 5 -> A]. Момент 2 c оказался РАНЬШЕ первой
+    // склейки — и по общему правилу снимает ручная камера. Первая версия этой
+    // проверки ждала здесь kCamB и провалилась: правило легко забыть даже
+    // тому, кто его написал, поэтому оно и закреплено отдельной строкой.
+    Check(doc.CameraAt(2.0f, kManual) == kManual, "освободившееся начало вернулось ручной камере");
+    Check(doc.CameraAt(3.5f, kManual) == kCamB, "порядок планов пересчитался");
+    Check(doc.CameraAt(6.0f, kManual) == kCamA, "и хвост тоже");
+
+    // Отрицательное время физически невозможно: ролик начинается с нуля.
+    doc.MoveCut(0, -3.0f);
+    Check(doc.Cameras.Cuts.front().Time >= 0.0f, "склейку нельзя утащить за начало ролика");
+
+    // Заглушенная дорожка обязана вести себя как отсутствующая — это способ
+    // сравнить монтаж с ручной камерой, не потеряв склейки.
+    doc.Cameras.Muted = true;
+    Check(doc.CameraAt(6.0f, kManual) == kManual, "заглушенный монтаж не переключает");
+    Check(!doc.Cameras.Cuts.empty(), "но склейки при этом целы");
+    doc.Cameras.Muted = false;
+
+    // Удаление камеры из сцены не должно оставлять склейку, которая выглядит
+    // работающей, ничего не переключая.
+    doc.Cameras.Cuts.clear();
+    doc.SetCut(1.0f, kCamA);
+    doc.SetCut(4.0f, kCamB);
+    doc.RemoveTracksOf(kCamA);
+    Check(doc.Cameras.Cuts.size() == 1, "склейка на удалённую камеру убрана");
+    Check(doc.CameraAt(2.0f, kManual) == kManual, "её время вернулось ручной камере");
+
+    // Монтаж задаёт длину ролика наравне с ключами: план, начинающийся на 30-й
+    // секунде, означает, что ролик минимум до неё.
+    doc.Cameras.Cuts.clear();
+    doc.SetCut(30.0f, kCamB);
+    Check(doc.ContentEnd() >= 30.0f, "склейка учитывается в длине содержимого");
+
+    // Круг через файл: монтаж обязан пережить сохранение и открытие.
+    {
+        AnimationDocument saved;
+        saved.Duration = 12.0f;
+        saved.SetCut(0.0f, kCamA);
+        saved.SetCut(3.5f, kCamB);
+        saved.SetCut(8.25f, kCamC);
+        saved.Cameras.Muted = true;
+
+        auto scene = std::make_unique<Scene>();
+        const std::string path = "/tmp/director3d_cuts.d3dproj";
+        std::string err;
+        Check(ProjectFile::Save(path, *scene, saved, 0.0f, err), "проект со склейками сохранён");
+
+        std::unique_ptr<Scene> loadedScene;
+        AnimationDocument loaded;
+        float playhead = 0.0f;
+        Check(ProjectFile::Load(path, loadedScene, loaded, playhead, err),
+              "проект со склейками открыт");
+        Check(loaded.Cameras.Cuts.size() == 3, "склейки вернулись все");
+        Check(loaded.Cameras.Muted, "заглушка дорожки вернулась");
+        bool same = loaded.Cameras.Cuts.size() == saved.Cameras.Cuts.size();
+        for (size_t i = 0; same && i < loaded.Cameras.Cuts.size(); ++i) {
+            same = std::fabs(loaded.Cameras.Cuts[i].Time - saved.Cameras.Cuts[i].Time) < 1e-4f &&
+                   loaded.Cameras.Cuts[i].CameraId == saved.Cameras.Cuts[i].CameraId;
+        }
+        Check(same, "время и камеры склеек не изменились");
+    }
+
+    // Проект БЕЗ монтажа не должен обзаводиться разделом сам собой: иначе
+    // любое открытие-сохранение раздувало бы файл тем, чего человек не заводил.
+    {
+        AnimationDocument plain;
+        auto scene = std::make_unique<Scene>();
+        const std::string path = "/tmp/director3d_nocuts.d3dproj";
+        std::string err;
+        ProjectFile::Save(path, *scene, plain, 0.0f, err);
+        std::ifstream file(path);
+        const std::string text((std::istreambuf_iterator<char>(file)),
+                               std::istreambuf_iterator<char>());
+        Check(text.find("cameraTrack") == std::string::npos,
+              "пустой монтаж в файл не пишется");
+    }
+}
+
 // --- Локализация -----------------------------------------------------------
 
 // Полноту перевода считает scripts/check_i18n.py по исходникам — во время
@@ -1622,6 +1758,7 @@ int RunSelfTest() {
     TestTracks();
     TestFileDialog();
     TestLocalization();
+    TestCameraTrack();
     TestClipTracks();
     TestAudioTrackTimeline();
     TestUndo();

@@ -456,7 +456,7 @@ void StagePanel::DrawFramingGuides(DirectorHost& host, ImVec2 imagePos, ImVec2 i
     if (!ov.CameraFrame && !ov.SafeArea && !ov.Thirds) return;
 
     Scene& scene = host.CurrentScene();
-    GameObject cam = scene.Get(host.ActiveCameraId());
+    GameObject cam = scene.Get(host.EffectiveCameraId());
     if (!cam.Valid()) return;
 
     // Соотношение сторон кадра берём с киношной камеры: рамка показывает
@@ -595,7 +595,7 @@ void StagePanel::DrawRenderView(DirectorHost& host) {
     if (avail.x < 16.0f || avail.y < 16.0f) { ImGui::End(); return; }
 
     Scene& scene = host.CurrentScene();
-    if (!scene.Get(host.ActiveCameraId()).Valid()) {
+    if (!scene.Get(host.EffectiveCameraId()).Valid()) {
         ImGui::Spacing();
         ImGui::Indent(12.0f);
         ImGui::TextDisabled("%s", T("Активной камеры нет."));
@@ -611,7 +611,7 @@ void StagePanel::DrawRenderView(DirectorHost& host) {
     // Кадр рендерится в соотношении сторон камеры, а не панели: превью должно
     // совпадать с тем, что уйдёт в файл, вплоть до кадрирования.
     float aspect = 1.85f;
-    GameObject cam = scene.Get(host.ActiveCameraId());
+    GameObject cam = scene.Get(host.EffectiveCameraId());
     if (const CineCameraComponent* cine = scene.Registry().try_get<CineCameraComponent>(cam.Entity())) {
         if (cine->AspectRatio > 0.1f) aspect = cine->AspectRatio;
     }

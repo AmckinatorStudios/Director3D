@@ -423,6 +423,10 @@ void StageRenderer::RenderStage(Scene& scene, Camera& camera, const LightingEnvi
                                 /*cinematic=*/preset == ViewPreset::SceneCamera);
         d.Velocity = true;
         d.PrevViewProj = &m_prevViewProjStage;
+        // Во вьюпорте склейка видна только когда он смотрит камерой сцены; в
+        // свободном облёте камера своя, и склейка её не касается.
+        BeginShot(preset == ViewPreset::SceneCamera ? sceneCameraId : -1,
+                  m_lastCameraStage, m_prevViewProjStage, d, m_stagePostfx);
     }
 
     RenderFrame(scene, env, d);
@@ -535,6 +539,7 @@ bool StageRenderer::RenderCameraView(Scene& scene, const LightingEnvironment& en
     d.ClearColor = glm::vec4(env.SkyColor * 0.85f, 1.0f);
     d.Velocity = true;
     d.PrevViewProj = &m_prevViewProjView;
+    BeginShot(cameraEntityId, m_lastCameraView, m_prevViewProjView, d, m_viewPostfx);
     RenderFrame(scene, env, d);
 
     m_viewPostApplied = true;
@@ -578,8 +583,22 @@ bool StageRenderer::RenderToTarget(Scene& scene, const LightingEnvironment& env,
     d.ClearColor = glm::vec4(env.SkyColor * 0.85f, 1.0f);
     d.Velocity = true;
     d.PrevViewProj = &m_prevViewProjExport;
+    BeginShot(cameraEntityId, m_lastCameraExport, m_prevViewProjExport, d, m_exportPostfx);
     RenderFrame(scene, env, d);
     return true;
+}
+
+void StageRenderer::BeginShot(int cameraId, int& lastCameraId, glm::mat4& prevViewProj,
+                              const FrameDesc& desc,
+                              std::optional<sage::render::PostFX>& fx) {
+    if (cameraId == lastCameraId) return;
+    lastCameraId = cameraId;
+    // Прошлой матрицей объявляем ТЕКУЩУЮ: скорость камеры на первом кадре
+    // плана выходит нулевой, и склейка получается резкой, как ей и положено.
+    // Скорости самих объектов при этом остаются настоящими — они никуда не
+    // прыгали, и смаз от их движения в новом плане законен.
+    prevViewProj = desc.Proj * desc.View;
+    if (fx) fx->ResetHistory();
 }
 
 void StageRenderer::ResetMotionHistory() {

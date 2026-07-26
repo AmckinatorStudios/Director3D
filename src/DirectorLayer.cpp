@@ -492,6 +492,59 @@ void DirectorLayer::BuildShowcase() {
         }
     }
 
+    // --- Монтаж: вторая камера и две склейки ---------------------------------
+    //
+    // Демонстрация собирается теми же вызовами, что доступны из интерфейса, и
+    // монтаж здесь не украшение: он гоняет тот самый путь, на котором камера
+    // выбирается ПОКАДРОВО в экспорте. Без него склейки проверялись бы только
+    // на CPU, а ошибка в связке «дорожка -> рендер» вылезла бы уже в ролике.
+    const int closeUp = Create(CreateKind::Camera);
+    RenameObject(closeUp, "Cam_CloseUp");
+    if (GameObject c = m_scene->Get(closeUp); c.Valid()) {
+        // Второй ракурс намеренно с ДРУГОЙ стороны площадки: склейка должна
+        // читаться как смена плана, а не как лёгкий сдвиг.
+        // Углы посчитаны из геометрии, а не подобраны на глаз: камера в
+        // (-4.2, 2.4, -3.4) смотрит на персонажа у начала координат.
+        //
+        // ЗНАК ТАНГАЖА. Transform::GetMatrix крутит X, потом Y, потом Z, а
+        // направление взгляда — это (0,0,-1) через эту матрицу. При
+        // ПОЛОЖИТЕЛЬНОМ угле X y-компонента направления становится
+        // ОТРИЦАТЕЛЬНОЙ, то есть камера смотрит ВНИЗ. Привычное
+        // «pitch = atan2(dy, расстояние)» даёт здесь противоположный знак, и
+        // подстановка его напрямую задирает камеру в небо ровно на столько,
+        // на сколько собирался наклонить, — что и произошло. Правильно так:
+        //     yaw   = atan2(-dx, -dz) = -129°
+        //     pitch = -asin(dy / |d|) = +17.5°
+        c.GetTransform().Position = {-4.2f, 2.4f, -3.4f};
+        c.GetTransform().Rotation = {17.5f, -129.0f, 0.0f};
+        if (CameraComponent* cam = m_scene->Registry().try_get<CameraComponent>(c.Entity())) {
+            cam->Primary = false;
+            cam->Fov = 38.0f; // длиннее основной — крупнее план
+        }
+    }
+    if (camera >= 0 && closeUp >= 0) {
+        // Оптика второго ракурса КОПИРУЕТСЯ с основного, а не выставляется
+        // заново. Дело не в экономии строк: два ракурса одного фильма обязаны
+        // выглядеть одинаково, а два набора настроек рядом неизбежно разъезжаются.
+        // Первая версия оставила второй камере значения по умолчанию — а там
+        // глубина резкости на f/2.8 с автофокусом и хроматическая аберрация,
+        // и весь крупный план вышел мыльным.
+        if (GameObject mainCam = m_scene->Get(camera), closeCam = m_scene->Get(closeUp);
+            mainCam.Valid() && closeCam.Valid()) {
+            auto& reg = m_scene->Registry();
+            if (const CineCameraComponent* from = reg.try_get<CineCameraComponent>(mainCam.Entity())) {
+                CineCameraComponent& to = reg.get_or_emplace<CineCameraComponent>(closeCam.Entity());
+                const float focus = to.FocusDistance;
+                to = *from;
+                to.FocusDistance = focus; // дистанция фокуса у своего плана своя
+            }
+        }
+
+        m_doc.SetCut(0.0f, camera);   // общий план с начала
+        m_doc.SetCut(5.0f, closeUp);  // на смене клипа уходим на крупный
+        m_doc.SetCut(7.5f, camera);   // и возвращаемся к общему
+    }
+
     m_doc.Markers.push_back(Marker{"Смена клипа", 5.0f, 0xFF3FC8E8u});
     m_selection = {hero};
     m_undo.Clear();
@@ -858,12 +911,17 @@ void DirectorLayer::OnRender() {
 #ifdef D3D_PROFILE_FRAME
     auto t1 = std::chrono::steady_clock::now();
 #endif
-    m_renderer.RenderStage(*m_scene, m_camera, env, m_shading, m_preset, m_activeCameraId,
+    // Кадр снимается ЭФФЕКТИВНОЙ камерой: если на этом времени стоит склейка,
+    // берётся она, иначе — ручной выбор. Так перемотка показывает готовый
+    // монтаж, ничего не записывая в m_activeCameraId: ручной выбор человека
+    // остаётся его выбором.
+    const int shotCamera = EffectiveCameraId();
+    m_renderer.RenderStage(*m_scene, m_camera, env, m_shading, m_preset, shotCamera,
                            m_overlays, m_selection, m_view, m_proj);
 #ifdef D3D_PROFILE_FRAME
     auto t2 = std::chrono::steady_clock::now();
 #endif
-    m_renderer.RenderCameraView(*m_scene, env, m_activeCameraId);
+    m_renderer.RenderCameraView(*m_scene, env, shotCamera);
 
     // Шаг времени закрыт: оба вида этого момента нарисованы, и положение
     // объектов можно запомнить как «прошлое» для смаза движения. Раньше —

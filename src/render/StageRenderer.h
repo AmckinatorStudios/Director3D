@@ -103,6 +103,7 @@ public:
     // головки таймлайна, смене сцены и загрузке проекта.
     void ResetMotionHistory();
 
+
     // Закрывает шаг времени сцены: положение объектов запоминается как
     // «прошлое» для смаза движения. Зовётся РОВНО ОДИН РАЗ за шаг, после того
     // как отрисованы все виды (вьюпорт, Render View) или записан кадр экспорта.
@@ -170,6 +171,11 @@ private:
 
     // Единственное место, где записана последовательность проходов кадра.
     // Возвращает буфер, в котором лежит результат (Hdr или Output).
+    // Начало нового плана монтажа: если камера этого потока сменилась,
+    // объявляет прошлой матрицей текущую, чтобы склейка вышла резкой.
+    void BeginShot(int cameraId, int& lastCameraId, glm::mat4& prevViewProj,
+                   const FrameDesc& desc, std::optional<sage::render::PostFX>& fx);
+
     Framebuffer& RenderFrame(Scene& scene, const LightingEnvironment& env, const FrameDesc& desc);
 
     void DrawScene(Scene& scene, const LightingEnvironment& env, const glm::mat4& view,
@@ -207,6 +213,13 @@ private:
     std::optional<Framebuffer> m_velocityFbo;
     // Прошлая матрица камеры отдельно у каждого потока кадров (см. FrameDesc).
     glm::mat4 m_prevViewProjStage{1.0f}, m_prevViewProjView{1.0f}, m_prevViewProjExport{1.0f};
+    // Какой камерой поток снимал ПРОШЛЫЙ кадр. Нужно монтажу: на склейке
+    // камера меняется мгновенно, и прошлая матрица принадлежит уже другой
+    // точке съёмки. Смаз движения принимает это за движение через всю сцену и
+    // размазывает первый кадр каждого плана — ровно то, что и получилось,
+    // пока это не отслеживалось. Сравнение живёт ЗДЕСЬ, а не у вызывающего:
+    // забыть его на стороне рендера невозможно, а на стороне вызова — легко.
+    int m_lastCameraStage = -1, m_lastCameraView = -1, m_lastCameraExport = -1;
     std::optional<Framebuffer> m_exportFbo;
     std::optional<sage::render::PostFX> m_exportPostfx;
     std::optional<sage::render::PostFX> m_stagePostfx, m_viewPostfx;

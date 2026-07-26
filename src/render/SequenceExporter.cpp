@@ -34,7 +34,8 @@ bool SequenceExporter::Begin(const Settings& settings, const AnimationDocument& 
     // Проверяем камеру ДО создания каталога и запуска кодировщика: иначе после
     // отказа оставался бы пустой каталог рендера и повисший процесс.
     StageRenderer::CameraFrameInfo frame = StageRenderer::CameraFrameOf(
-        scene, m_settings.CameraId, (float)m_settings.Width / (float)m_settings.Height);
+        scene, doc.CameraAt(m_settings.StartTime, m_settings.CameraId),
+        (float)m_settings.Width / (float)m_settings.Height);
     if (!frame.HasCamera) {
         err = "в сцене нет камеры — снимать нечем";
         return false;
@@ -124,12 +125,17 @@ bool SequenceExporter::Step(Scene& scene, StageRenderer& renderer, AnimationDocu
         LightingEnvironment env = CollectVisibleLighting(scene);
         renderer.RenderShadow(scene, env);
 
+        // Камера выбирается НА КАЖДОМ КАДРЕ, а не один раз на весь экспорт:
+        // в этом и состоит монтаж. Настройка из диалога рендера остаётся
+        // запасной — ею снимается всё, где склеек нет.
+        const int cameraId = doc.CameraAt(time, m_settings.CameraId);
+
         const int samples = std::max(m_settings.Samples, 1);
         if (samples == 1) {
-            if (!renderer.RenderToTarget(scene, env, m_settings.CameraId, *m_target)) {
+            if (!renderer.RenderToTarget(scene, env, cameraId, *m_target)) {
                 return fail("камера пропала посреди экспорта");
             }
-        } else if (!RenderAccumulated(scene, renderer, env, samples)) {
+        } else if (!RenderAccumulated(scene, renderer, env, cameraId, samples)) {
             return fail("камера пропала посреди экспорта");
         }
 
@@ -186,7 +192,8 @@ bool SequenceExporter::Step(Scene& scene, StageRenderer& renderer, AnimationDocu
 }
 
 bool SequenceExporter::RenderAccumulated(Scene& scene, StageRenderer& renderer,
-                                         const LightingEnvironment& env, int samples) {
+                                         const LightingEnvironment& env, int cameraId,
+                                         int samples) {
     const size_t pixels = (size_t)m_settings.Width * m_settings.Height * 3u;
     if (m_accum.size() != pixels) m_accum.assign(pixels, 0.0f);
     else std::fill(m_accum.begin(), m_accum.end(), 0.0f);
@@ -207,7 +214,7 @@ bool SequenceExporter::RenderAccumulated(Scene& scene, StageRenderer& renderer,
         };
         const glm::vec2 jitter(halton(s, 2) - 0.5f, halton(s, 3) - 0.5f);
 
-        if (!renderer.RenderToTarget(scene, env, m_settings.CameraId, *m_target, jitter)) {
+        if (!renderer.RenderToTarget(scene, env, cameraId, *m_target, jitter)) {
             return false;
         }
         m_target->Bind();

@@ -92,6 +92,7 @@ private:
     // Снимает кадр несколько раз с микросдвигом и усредняет прямо в m_frameBuffer.
     // false — камера пропала посреди экспорта.
     bool RenderAccumulated(Scene& scene, StageRenderer& renderer, const LightingEnvironment& env,
+                           int cameraId,
                            int samples);
 
 public:

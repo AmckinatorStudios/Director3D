@@ -782,11 +782,183 @@ void TimelinePanel::DrawAudioRow(DirectorHost& host, const Layout& l, float y, I
 }
 
 // ============================================================================
+//  Монтаж камер
+// ============================================================================
+
+void TimelinePanel::DrawCameraPicker(DirectorHost& host, int currentId, int cutIndex) {
+    Scene& scene = host.CurrentScene();
+    auto view = scene.Registry().view<CameraComponent, IdComponent>();
+    bool any = false;
+    for (auto e : view) {
+        const int id = view.get<IdComponent>(e).Id;
+        any = true;
+        const std::string name = TargetName(scene, id);
+        if (ImGui::MenuItem(name.c_str(), nullptr, id == currentId)) {
+            host.PushUndo();
+            AnimationDocument& doc = host.Document();
+            if (cutIndex >= 0) doc.Cameras.Cuts[(size_t)cutIndex].CameraId = id;
+            else doc.SetCut(host.CurrentTime(), id);
+        }
+    }
+    if (!any) ImGui::TextDisabled("%s", T("В сцене нет камер"));
+}
+
+void TimelinePanel::DrawCameraRow(DirectorHost& host, const Layout& l, float y, ImDrawList* dl) {
+    AnimationDocument& doc = host.Document();
+    Scene& scene = host.CurrentScene();
+    CameraTrack& track = doc.Cameras;
+    const float left = l.Origin.x + l.TrackX;
+    const float right = left + l.Width;
+    const ImU32 dim = track.Muted ? Theme::Colors::TextFaint : Theme::Colors::Text;
+
+    Icons::Draw(dl, Icon::Camera, ImVec2(l.Origin.x + 20.0f, y + l.RowH * 0.5f), 14.0f,
+                track.Muted ? Theme::Colors::TextFaint : Theme::Colors::TextDim);
+    dl->AddText(ImVec2(l.Origin.x + 32.0f, y + 3.0f), dim, T("Монтаж"));
+
+    ImGui::PushID("cameraRow");
+    ImGui::SetCursorScreenPos(ImVec2(l.Origin.x + l.TrackX - 40.0f, y + 2.0f));
+    bool notMuted = !track.Muted;
+    if (Icons::ToggleIcon("camMute", Icon::Camera, Icon::Mute, notMuted,
+                          T("Отключить монтаж: кадр снимается ручной камерой"), 16.0f)) {
+        track.Muted = !notMuted;
+    }
+
+    const float top = y + 2.0f;
+    const float bottom = y + l.RowH - 2.0f;
+    const int liveCut = doc.CutIndexAt(host.CurrentTime());
+
+    // Участок ДО первой склейки рисуется отдельно и приглушённо: там работает
+    // ручная камера, и это правило должно быть видно, а не подразумеваться.
+    const float firstX = track.Cuts.empty() ? right : TimeToX(l, track.Cuts.front().Time);
+    if (firstX > left + 2.0f) {
+        const ImVec2 a(left, top), b(std::min(firstX, right), bottom);
+        dl->AddRectFilled(a, b, IM_COL32(38, 44, 54, 160), 3.0f);
+        const std::string label = std::string(T("ручная: ")) + TargetName(scene, host.ActiveCameraId());
+        dl->PushClipRect(a, b, true);
+        dl->AddText(ImVec2(a.x + 6.0f, a.y + 3.0f), Theme::Colors::TextFaint, label.c_str());
+        dl->PopClipRect();
+    }
+
+    for (size_t i = 0; i < track.Cuts.size(); ++i) {
+        CameraCut& cut = track.Cuts[i];
+        const float x0 = TimeToX(l, cut.Time);
+        const float x1 = (i + 1 < track.Cuts.size()) ? TimeToX(l, track.Cuts[i + 1].Time)
+                                                     : TimeToX(l, doc.Duration);
+        if (x1 < left || x0 > right) continue;
+
+        const ImVec2 a(std::max(x0, left), top);
+        const ImVec2 b(std::min(x1, right), bottom);
+        if (b.x - a.x < 2.0f) continue;
+
+        const bool live = (int)i == liveCut;
+        // Цвет плана — по камере, а не по порядку: два плана одной камерой
+        // должны читаться как одна камера, иначе монтаж не видно глазом.
+        const ImU32 base = Theme::BlockColor(cut.CameraId);
+        dl->AddRectFilled(a, b, track.Muted ? IM_COL32(60, 60, 60, 120) : base, 3.0f);
+        if (live) dl->AddRect(a, b, IM_COL32(255, 255, 255, 200), 3.0f, 0, 2.0f);
+
+        dl->PushClipRect(a, b, true);
+        dl->AddText(ImVec2(a.x + 6.0f, a.y + 3.0f), IM_COL32(255, 255, 255, 230),
+                    TargetName(scene, cut.CameraId).c_str());
+        dl->PopClipRect();
+
+        // Ручка склейки — сам её левый край: тащить план целиком бессмысленно,
+        // у плана нет длины, она задаётся следующей склейкой.
+        ImGui::SetCursorScreenPos(ImVec2(a.x - 3.0f, top));
+        ImGui::PushID((int)i);
+        ImGui::InvisibleButton("##cut", ImVec2(10.0f, bottom - top));
+        const bool hovered = ImGui::IsItemHovered();
+        if (hovered) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+        if (ImGui::IsItemActivated()) {
+            host.CaptureUndo();
+            m_draggingCut = (int)i;
+        }
+        if (hovered && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            ImGui::SetTooltip(T("%s\nсклейка на %.2f c\nтащить — сдвинуть, ПКМ — сменить камеру"),
+                              TargetName(scene, cut.CameraId).c_str(), (double)cut.Time);
+        }
+        ImGui::PopID();
+
+        // Тело плана: контекстное меню и выбор камеры.
+        ImGui::SetCursorScreenPos(ImVec2(a.x + 7.0f, top));
+        ImGui::PushID(1000 + (int)i);
+        ImGui::InvisibleButton("##shot", ImVec2(std::max(b.x - a.x - 7.0f, 1.0f), bottom - top));
+        if (ImGui::BeginPopupContextItem("##shotctx")) {
+            ImGui::TextDisabled("%s", T("Камера плана"));
+            DrawCameraPicker(host, cut.CameraId, (int)i);
+            ImGui::Separator();
+            if (ImGui::MenuItem(T("Удалить склейку"))) {
+                host.PushUndo();
+                doc.RemoveCut((int)i);
+                ImGui::EndPopup();
+                ImGui::PopID();
+                break;
+            }
+            ImGui::EndPopup();
+        }
+        ImGui::PopID();
+    }
+
+    // Перетаскивание склейки. Индекс МЕНЯЕТСЯ при пересечении соседней —
+    // MoveCut возвращает новый, и его надо запомнить, иначе следующий кадр
+    // потащит чужую склейку.
+    if (m_draggingCut >= 0) {
+        if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            const float t = std::clamp(XToTime(l, ImGui::GetIO().MousePos.x), 0.0f, doc.Duration);
+            m_draggingCut = doc.MoveCut(m_draggingCut, t);
+        } else {
+            m_draggingCut = -1;
+        }
+    }
+
+    // Пустое место дорожки: поставить склейку прямо здесь.
+    ImGui::SetCursorScreenPos(ImVec2(left, top));
+    ImGui::InvisibleButton("##camBody", ImVec2(std::max(right - left, 1.0f), bottom - top));
+    if (ImGui::BeginPopupContextItem("##camctx")) {
+        ImGui::TextDisabled("%s", T("Поставить склейку на головке"));
+        DrawCameraPicker(host, -1, -1);
+        ImGui::Separator();
+        ImGui::MenuItem(T("Отключить монтаж"), nullptr, &track.Muted);
+        if (ImGui::MenuItem(T("Убрать монтаж целиком"), nullptr, false, !track.Cuts.empty())) {
+            host.PushUndo();
+            track.Cuts.clear();
+        }
+        ImGui::EndPopup();
+    }
+    ImGui::PopID();
+
+    dl->AddLine(ImVec2(l.Origin.x, y + l.RowH), ImVec2(right, y + l.RowH), Theme::Colors::LineSoft, 1.0f);
+}
+
+// ============================================================================
 //  Меню добавления дорожки
 // ============================================================================
 
 void TimelinePanel::DrawAddTrackMenu(DirectorHost& host) {
     Scene& scene = host.CurrentScene();
+    AnimationDocument& doc = host.Document();
+
+    // Монтаж камер заводится ПЕРВЫМ пунктом и не зависит от выбранного
+    // объекта: он относится ко всему ролику, а не к чему-то одному в сцене.
+    // Первая склейка ставится сразу — дорожка без склеек не показывается и
+    // выглядела бы как «пункт ничего не сделал».
+    {
+        const bool hasCamera = !scene.Registry().view<CameraComponent>().empty();
+        const bool exists = !doc.Cameras.Cuts.empty();
+        if (ImGui::MenuItem(T("Монтаж камер"), nullptr, false, hasCamera && !exists)) {
+            host.PushUndo();
+            doc.SetCut(host.CurrentTime(), host.ActiveCameraId());
+            host.SetStatus(T("Монтаж камер заведён — ПКМ по плану меняет камеру"));
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("%s", exists ? T("Монтаж уже заведён")
+                              : hasCamera ? T("Переключение активной камеры по времени.\n"
+                                              "Каждая склейка задаёт, чем снимается план.")
+                                          : T("Сначала создайте камеру (Создать > Камера)"));
+        }
+        ImGui::Separator();
+    }
+
     const int id = host.SelectedId();
     if (id < 0) {
         ImGui::TextDisabled("%s", T("Сначала выберите объект в сцене"));
@@ -846,6 +1018,16 @@ void TimelinePanel::DrawTimelineTab(DirectorHost& host, const Layout& l) {
 
     const int selectedId = host.SelectedId();
     int clipColorIndex = 0;
+
+    // Монтаж камер — самая внешняя структура ролика, поэтому он идёт первой
+    // строкой, над клипами и ключами. Показывается, только когда склейки есть:
+    // пустая дорожка мешала бы всем, кто снимает одной камерой. Завести её
+    // можно из меню «+ Дорожка».
+    if (!doc.Cameras.Cuts.empty() && y < l.Origin.y + l.Height) {
+        DrawCameraRow(host, l, y, dl);
+        y += l.RowH;
+    }
+
 
     // Дорожки клипов идут первыми: это «крупные мазки» ролика, а покадровые
     // ключи — доводка поверх них.

@@ -75,6 +75,9 @@ private:
     void DrawClipTrack(DirectorHost& host, ClipTrack& track, const Layout& l, float y,
                        ImDrawList* dl, int colorIndex);
     void DrawAudioRow(DirectorHost& host, const Layout& l, float y, ImDrawList* dl);
+    void DrawCameraRow(DirectorHost& host, const Layout& l, float y, ImDrawList* dl);
+    // Список камер сцены для меню выбора; помечает текущую галочкой.
+    void DrawCameraPicker(DirectorHost& host, int currentId, int cutIndex);
     void DrawAddTrackMenu(DirectorHost& host);
 
     // --- Выбор ключей ------------------------------------------------------
@@ -127,6 +130,7 @@ private:
     int m_draggingBlockTrack = -1;  // id дорожки клипов, чей блок тащат
     int m_draggingBlockIndex = -1;
     int m_draggingBlockEdge = 0;    // 0 — целиком, -1 — левый край, +1 — правый
+    int m_draggingCut = -1;         // индекс перетаскиваемой склейки монтажа
 
     // Graph Editor: вертикальный масштаб (значения) и какие каналы показывать.
     float m_valueCenter = 0.0f;

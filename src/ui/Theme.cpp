@@ -148,4 +148,18 @@ void Apply() {
     }
 }
 
+ImU32 BlockColor(int key) {
+    // Палитра подобрана вручную, а не выведена из хеша: случайные цвета дают
+    // и ядовитые, и почти одинаковые пары, а на монтаже соседние планы обязаны
+    // различаться с одного взгляда.
+    static const ImU32 kPalette[] = {
+        0xFF8A4A9A, 0xFF4A8A5A, 0xFF3C7FD9, 0xFFD9A03C,
+        0xFFC2543C, 0xFF3CB0B0, 0xFF8A7A3C, 0xFF6A5AC8,
+    };
+    constexpr int kCount = (int)(sizeof(kPalette) / sizeof(kPalette[0]));
+    // Отрицательные ключи (камеры нет) не должны уводить индекс в минус.
+    const int index = ((key % kCount) + kCount) % kCount;
+    return kPalette[index];
+}
+
 } // namespace d3d::Theme

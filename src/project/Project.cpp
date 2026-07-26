@@ -1,5 +1,6 @@
 #include "project/Project.h"
 
+#include <algorithm>
 #include <fstream>
 
 #include <nlohmann/json.hpp>
@@ -240,6 +241,17 @@ json SaveDocument(const AnimationDocument& doc) {
     }
     out["clipTracks"] = std::move(clipTracks);
 
+    // Монтаж камер. Пустую дорожку не пишем: старые проекты без неё и новые
+    // без склеек должны выглядеть одинаково, иначе любое открытие-сохранение
+    // раздувало бы файл разделами, которых человек не заводил.
+    if (!doc.Cameras.Cuts.empty() || doc.Cameras.Muted) {
+        json cuts = json::array();
+        for (const CameraCut& c : doc.Cameras.Cuts) {
+            cuts.push_back({{"time", c.Time}, {"camera", c.CameraId}});
+        }
+        out["cameraTrack"] = {{"muted", doc.Cameras.Muted}, {"cuts", std::move(cuts)}};
+    }
+
     json markers = json::array();
     for (const Marker& m : doc.Markers) {
         markers.push_back({{"name", m.Name}, {"time", m.Time}, {"color", m.Color}});
@@ -304,6 +316,21 @@ void LoadDocument(AnimationDocument& doc, const json& in) {
             t.Blocks.push_back(std::move(b));
         }
         doc.ClipTracks.push_back(std::move(t));
+    }
+
+    if (in.contains("cameraTrack")) {
+        const json& jc = in["cameraTrack"];
+        doc.Cameras.Muted = jc.value("muted", false);
+        for (const json& jcut : jc.value("cuts", json::array())) {
+            CameraCut cut;
+            cut.Time = jcut.value("time", 0.0f);
+            cut.CameraId = jcut.value("camera", -1);
+            doc.Cameras.Cuts.push_back(cut);
+        }
+        // Порядок восстанавливаем, а не доверяем файлу: поиск склейки идёт по
+        // отсортированному списку и на перепутанном молча дал бы не тот план.
+        std::stable_sort(doc.Cameras.Cuts.begin(), doc.Cameras.Cuts.end(),
+                         [](const CameraCut& a, const CameraCut& b) { return a.Time < b.Time; });
     }
 
     for (const json& jm : in.value("markers", json::array())) {
