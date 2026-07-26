@@ -99,6 +99,11 @@ public:
     // головки таймлайна, смене сцены и загрузке проекта.
     void ResetMotionHistory();
 
+    // Закрывает шаг времени сцены: положение объектов запоминается как
+    // «прошлое» для смаза движения. Зовётся РОВНО ОДИН РАЗ за шаг, после того
+    // как отрисованы все виды (вьюпорт, Render View) или записан кадр экспорта.
+    void EndTimeStep() { m_batch.AdvanceVelocityHistory(); }
+
     const sage::ecs::RenderStats& LastStats() const { return m_stats; }
     ParticleSystem& Particles() { return *m_particles; }
 
@@ -144,6 +149,14 @@ private:
         glm::vec4 ClearColor{0.106f, 0.114f, 0.133f, 1.0f};
         bool Sky = true;
 
+        // Смаз движения от ОБЪЕКТОВ, а не только от камеры. Требует отдельного
+        // прохода геометрии в буфер скоростей, поэтому включается только там,
+        // где смаз реально нужен, — иначе за него платили бы все кадры.
+        bool Velocity = false;
+        // Матрица камеры на прошлом шаге ЭТОГО потока кадров. Своя у вьюпорта,
+        // Render View и экспорта — RenderFrame читает её и записывает новую.
+        glm::mat4* PrevViewProj = nullptr;
+
         // Служебная графика рабочего вида. Всё nullptr — чистовой кадр.
         const sage::render::GridSettings* Grid = nullptr;
         const ViewportOverlays* Helpers = nullptr;
@@ -185,6 +198,11 @@ private:
     std::optional<Framebuffer> m_outlineMask;
     // Буфер и пост-обработка экспорта: создаются при первом рендере секвенции,
     // размер задаёт настройка экспорта, а не размер панели.
+    // Буфер экранных скоростей. Один на все кадры: проходы идут по очереди, а
+    // размер подгоняется под текущий кадр перед использованием.
+    std::optional<Framebuffer> m_velocityFbo;
+    // Прошлая матрица камеры отдельно у каждого потока кадров (см. FrameDesc).
+    glm::mat4 m_prevViewProjStage{1.0f}, m_prevViewProjView{1.0f}, m_prevViewProjExport{1.0f};
     std::optional<Framebuffer> m_exportFbo;
     std::optional<sage::render::PostFX> m_exportPostfx;
     std::optional<sage::render::PostFX> m_stagePostfx, m_viewPostfx;

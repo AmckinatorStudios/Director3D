@@ -418,6 +418,8 @@ void StageRenderer::RenderStage(Scene& scene, Camera& camera, const LightingEnvi
         // и чужая дистанция фокуса замылила бы всё рабочее поле.
         d.FxSettings = PostFXOf(scene, sceneCameraId, CameraFrameOf(scene, sceneCameraId, aspect),
                                 /*cinematic=*/preset == ViewPreset::SceneCamera);
+        d.Velocity = true;
+        d.PrevViewProj = &m_prevViewProjStage;
     }
 
     RenderFrame(scene, env, d);
@@ -463,16 +465,37 @@ Framebuffer& StageRenderer::RenderFrame(Scene& scene, const LightingEnvironment&
         m_debug->Flush(d.View, d.Proj);
     }
 
-    // --- Проход 5: пост-обработка ---
+    // --- Проход 5: скорости ---
+    // Отдельный проход геометрии, пишущий экранное смещение каждого пикселя за
+    // кадр. Нужен только смазу движения, поэтому и рисуется только когда смаз
+    // включён: лишний проход по всей видимой геометрии стоит заметно.
+    unsigned int velocityTexture = 0;
+    if (d.Velocity && d.PrevViewProj && d.FxSettings.MotionBlurEnabled &&
+        d.FxSettings.MotionBlurAmount > 0.0f) {
+        if (!m_velocityFbo || m_velocityFbo->Width() != d.Hdr->Width() ||
+            m_velocityFbo->Height() != d.Hdr->Height()) {
+            m_velocityFbo.emplace(d.Hdr->Width(), d.Hdr->Height());
+        }
+        m_velocityFbo->Bind();
+        // Чёрный — нулевая скорость: там, где геометрии нет (небо), смазывать
+        // нечего, и фон не должен тянуться за движущимся объектом.
+        device.SetClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        device.Clear();
+        m_batch.RenderVelocity(d.Proj * d.View, *d.PrevViewProj);
+        velocityTexture = m_velocityFbo->ColorTexture();
+    }
+    if (d.PrevViewProj) *d.PrevViewProj = d.Proj * d.View;
+
+    // --- Проход 6: пост-обработка ---
     Framebuffer* result = d.Hdr;
     if (d.Fx && d.Output) {
         d.Fx->Render(d.Hdr->ColorTexture(), d.Hdr->DepthTexture(), d.Hdr->Width(), d.Hdr->Height(),
                      d.Proj, d.View, d.FxSettings, d.Output, 0, 0, d.Output->Width(),
-                     d.Output->Height());
+                     d.Output->Height(), velocityTexture);
         result = d.Output;
     }
 
-    // --- Проход 6: подсветка выделения ---
+    // --- Проход 7: подсветка выделения ---
     // Строго последней и поверх результата пост-обработки: обводка — это
     // указание инструмента, а не часть изображения, и тон-маппинг её съел бы.
     if (d.Outline && !d.Outline->empty()) {
@@ -502,6 +525,8 @@ bool StageRenderer::RenderCameraView(Scene& scene, const LightingEnvironment& en
     d.Fx = &*m_viewPostfx;
     d.FxSettings = PostFXOf(scene, cameraEntityId, frame, /*cinematic=*/true);
     d.ClearColor = glm::vec4(env.SkyColor * 0.85f, 1.0f);
+    d.Velocity = true;
+    d.PrevViewProj = &m_prevViewProjView;
     RenderFrame(scene, env, d);
 
     m_viewPostApplied = true;
@@ -543,6 +568,8 @@ bool StageRenderer::RenderToTarget(Scene& scene, const LightingEnvironment& env,
     d.Fx = &*m_exportPostfx;
     d.FxSettings = PostFXOf(scene, cameraEntityId, frame, /*cinematic=*/true);
     d.ClearColor = glm::vec4(env.SkyColor * 0.85f, 1.0f);
+    d.Velocity = true;
+    d.PrevViewProj = &m_prevViewProjExport;
     RenderFrame(scene, env, d);
     return true;
 }
@@ -554,6 +581,9 @@ void StageRenderer::ResetMotionHistory() {
     if (m_stagePostfx) m_stagePostfx->ResetHistory();
     if (m_viewPostfx) m_viewPostfx->ResetHistory();
     if (m_exportPostfx) m_exportPostfx->ResetHistory();
+    // И положение объектов: после скачка во времени они стоят совсем не там,
+    // где кадром раньше, и скорость по старому снимку была бы длиной в прыжок.
+    m_batch.ResetVelocityHistory();
 }
 
 // ============================================================================
