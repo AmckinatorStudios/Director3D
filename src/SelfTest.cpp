@@ -1075,6 +1075,90 @@ void TestTracks() {
         Check(true, "дорожка несуществующего объекта не ломает применение");
     }
 
+    // --- Копирование, растяжение и запекание ---
+    {
+        AnimationDocument doc;
+        Track& pos = doc.EnsureTrack(cubeId, Property::Position);
+        pos.Channels[0].SetKey(1.0f, 10.0f, Interp::Linear);
+        pos.Channels[0].SetKey(2.0f, 20.0f, Interp::Bezier);
+        pos.Channels[0].AtMutable(1).OutTangent = 5.0f;
+        pos.Channels[1].SetKey(1.5f, 7.0f, Interp::Constant);
+        // Ключ ВНЕ диапазона копирования — он не должен попасть в буфер.
+        pos.Channels[0].SetKey(9.0f, 99.0f, Interp::Linear);
+
+        KeyClipboard clip;
+        Check(doc.CopyKeys(cubeId, {}, 1.0f, 2.0f, clip) == 3, "скопированы ключи из диапазона");
+        Check(clip.Count() == 3, "в буфере ровно они");
+
+        // Смещения считаются от ЛЕВОГО КРАЯ диапазона, а не от первого ключа:
+        // иначе пауза в начале выделения пропадала бы при вставке.
+        float minOffset = 1e9f;
+        for (const ClipboardKey& k : clip.Keys) minOffset = std::min(minOffset, k.Offset);
+        CheckNear(minOffset, 0.0f, 1e-4f, "смещения отсчитаны от начала диапазона");
+
+        // Вставка на ДРУГОЙ объект — ради этого буфер и хранит свойство, а не
+        // ссылку на дорожку.
+        Check(doc.PasteKeys(cameraId, clip, 5.0f) == 3, "буфер вставился на другой объект");
+        const Track* pasted = doc.FindTrack(cameraId, Property::Position);
+        Check(pasted != nullptr, "у получателя появилась дорожка позиции");
+        if (pasted) {
+            Check(pasted->Channels[0].Count() == 2, "первый канал получил свои ключи");
+            Check(pasted->Channels[1].Count() == 1, "второй канал получил свой ключ");
+            CheckNear(pasted->Channels[0].At(0).Time, 5.0f, 1e-4f, "первый ключ лёг на время вставки");
+            CheckNear(pasted->Channels[0].At(1).Time, 6.0f, 1e-4f, "рисунок во времени сохранился");
+            CheckNear(pasted->Channels[0].At(1).Value, 20.0f, 1e-4f, "значение сохранилось");
+            Check(pasted->Channels[0].At(1).Mode == Interp::Bezier, "режим интерполяции сохранился");
+            CheckNear(pasted->Channels[0].At(1).OutTangent, 5.0f, 1e-4f, "касательная сохранилась");
+            Check(pasted->Channels[1].At(0).Mode == Interp::Constant, "ступенька сохранилась");
+        }
+
+        // Растяжение вдвое вокруг времени 1.0: ключ на 2.0 уезжает на 3.0,
+        // ключ на 1.0 остаётся на месте (он и есть точка опоры).
+        AnimationDocument st;
+        Track& t = st.EnsureTrack(cubeId, Property::Position);
+        t.Channels[0].SetKey(1.0f, 0.0f, Interp::Bezier);
+        t.Channels[0].SetKey(2.0f, 10.0f, Interp::Bezier);
+        t.Channels[0].AtMutable(1).InTangent = 8.0f;
+        Check(st.ScaleKeyTimes(cubeId, {}, 0.0f, 10.0f, 1.0f, 2.0f) == 2, "растянулись оба ключа");
+        CheckNear(t.Channels[0].At(0).Time, 1.0f, 1e-4f, "ключ в точке опоры не сдвинулся");
+        CheckNear(t.Channels[0].At(1).Time, 3.0f, 1e-4f, "второй ключ отъехал вдвое дальше");
+        // Касательная задана в «значение за секунду»: растянув время вдвое,
+        // наклон надо уполовинить, иначе форма кривой поедет.
+        CheckNear(t.Channels[0].At(1).InTangent, 4.0f, 1e-4f, "касательная пересчитана под новое время");
+
+        // Сжатие обратно возвращает исходный тайминг.
+        st.ScaleKeyTimes(cubeId, {}, 0.0f, 10.0f, 1.0f, 0.5f);
+        CheckNear(t.Channels[0].At(1).Time, 2.0f, 1e-4f, "обратное сжатие вернуло тайминг");
+        CheckNear(t.Channels[0].At(1).InTangent, 8.0f, 1e-4f, "и касательную");
+
+        // Запекание: кривая превращается в ключи по кадрам, а форма остаётся.
+        AnimationDocument bk;
+        Track& curve = bk.EnsureTrack(cubeId, Property::Position);
+        curve.Channels[0].SetKey(0.0f, 0.0f, Interp::EaseInOut);
+        curve.Channels[0].SetKey(1.0f, 10.0f, Interp::EaseInOut);
+        // Значения ДО запекания — с ними и сверяем результат.
+        float before[5];
+        for (int i = 0; i < 5; ++i) before[i] = curve.Channels[0].Evaluate((float)i * 0.25f);
+        // Ключ за пределами диапазона — его запекание трогать не должно.
+        curve.Channels[0].SetKey(5.0f, 42.0f, Interp::Linear);
+
+        Check(bk.BakeTrack(curve, 0.0f, 1.0f, 24.0f) == 25, "запеклись все кадры диапазона");
+        Check(curve.Channels[0].Count() == 26, "ключ вне диапазона уцелел");
+        bool shapeKept = true;
+        for (int i = 0; i < 5; ++i) {
+            const float after = curve.Channels[0].Evaluate((float)i * 0.25f);
+            if (std::fabs(after - before[i]) > 0.05f) shapeKept = false;
+        }
+        Check(shapeKept, "форма кривой после запекания сохранилась");
+        bool allLinear = true;
+        for (int i = 0; i < curve.Channels[0].Count(); ++i) {
+            const Keyframe& k = curve.Channels[0].At(i);
+            if (k.Time <= 1.0f + 1e-4f && k.Mode != Interp::Linear) allLinear = false;
+        }
+        Check(allLinear, "запечённые ключи линейные — форму задаёт их частота");
+        CheckNear(curve.Channels[0].At(25).Value, 42.0f, 1e-4f, "ключ вне диапазона не тронут");
+    }
+
     // --- Круг через файл проекта ---
     // Самое важное для дорожек: всё, что аниматор настроил, обязано пережить
     // сохранение. Молча теряющееся поле выглядит как «программа сломалась

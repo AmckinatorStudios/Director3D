@@ -90,6 +90,27 @@ private:
     bool IsKeySelected(const KeyRef& ref) const;
     void ToggleKeySelection(const KeyRef& ref, bool additive);
     void DeleteSelectedKeys(DirectorHost& host);
+    void DrawKeyOpsMenu(DirectorHost& host);
+    // Диапазон времени и набор дорожек, покрытые выделением. Обе операции —
+    // копирование и растяжение — работают с диапазоном, а не со списком
+    // ссылок: так одна и та же реализация обслуживает и рамку, и «весь отрезок».
+    bool SelectionRange(float& from, float& to, std::vector<int>& trackIds) const;
+    KeyClipboard m_clipboard;
+    float m_scaleFactor = 2.0f;
+
+    // --- Рамка выделения ---------------------------------------------------
+    // Тянется по пустому месту дорожек и забирает все ключи внутри. Без неё
+    // выделить два десятка ключей можно только двадцатью щелчками с Ctrl.
+    //
+    // Ключи проверяются на попадание ТАМ ЖЕ, где рисуются: их экранные позиции
+    // считаются при отрисовке строки, и хранить их отдельным списком значило бы
+    // дублировать расчёт и рисковать расхождением.
+    bool m_boxSelecting = false;
+    bool m_boxAdditive = false;   // Ctrl — добавлять к выделению, а не заменять
+    ImVec2 m_boxStart{0.0f, 0.0f};
+    ImVec2 m_boxEnd{0.0f, 0.0f};
+    // Попадает ли точка в текущую рамку (в экранных координатах).
+    bool InSelectionBox(const ImVec2& p) const;
     void SetSelectedKeysInterp(DirectorHost& host, Interp mode);
 
     // --- Состояние ---------------------------------------------------------

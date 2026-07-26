@@ -596,6 +596,13 @@ void TimelinePanel::DrawKeysRow(DirectorHost& host, Track& track, int channel, c
                               (double)key.Value, InterpName(key.Mode));
         }
 
+        // Рамка выделения проверяется здесь же, где ключ рисуется: его экранная
+        // позиция уже посчитана, и второй расчёт мог бы разойтись с первым.
+        if (m_boxSelecting && !track.Locked && InSelectionBox(ImVec2(x, cy)) &&
+            !IsKeySelected(ref)) {
+            m_selectedKeys.push_back(ref);
+        }
+
         // Ступенчатые ключи рисуем квадратом: форма сразу говорит, что значение
         // не интерполируется, без наведения мышью.
         const ImU32 color = track.Muted ? Theme::Colors::TextFaint : info.ChannelColors[channel];
@@ -960,6 +967,106 @@ void TimelinePanel::DrawDopeTab(DirectorHost& host, const Layout& l) {
 
 // Всё, что относится к чтению графика, — в одном меню. Тремя отдельными
 // элементами панель переполнялась, и подписи обрезались на середине слова.
+bool TimelinePanel::InSelectionBox(const ImVec2& p) const {
+    if (!m_boxSelecting) return false;
+    const float x0 = std::min(m_boxStart.x, m_boxEnd.x), x1 = std::max(m_boxStart.x, m_boxEnd.x);
+    const float y0 = std::min(m_boxStart.y, m_boxEnd.y), y1 = std::max(m_boxStart.y, m_boxEnd.y);
+    return p.x >= x0 && p.x <= x1 && p.y >= y0 && p.y <= y1;
+}
+
+bool TimelinePanel::SelectionRange(float& from, float& to, std::vector<int>& trackIds) const {
+    if (m_selectedKeys.empty()) return false;
+    from = 1e9f;
+    to = -1e9f;
+    trackIds.clear();
+    for (const KeyRef& ref : m_selectedKeys) {
+        from = std::min(from, ref.Time);
+        to = std::max(to, ref.Time);
+        if (std::find(trackIds.begin(), trackIds.end(), ref.TrackId) == trackIds.end()) {
+            trackIds.push_back(ref.TrackId);
+        }
+    }
+    return true;
+}
+
+// Операции над ключами: копирование между объектами, растяжение во времени,
+// запекание кривой в кадры.
+void TimelinePanel::DrawKeyOpsMenu(DirectorHost& host) {
+    AnimationDocument& doc = host.Document();
+    char label[48];
+    if (m_clipboard.Empty()) std::snprintf(label, sizeof(label), "Ключи");
+    else std::snprintf(label, sizeof(label), "Ключи (в буфере %d)", m_clipboard.Count());
+    if (!ImGui::BeginMenu(label)) return;
+
+    float from = 0.0f, to = 0.0f;
+    std::vector<int> tracks;
+    const bool haveSelection = SelectionRange(from, to, tracks);
+
+    if (!haveSelection) ImGui::TextDisabled("Выберите ключи в таймлайне");
+
+    ImGui::BeginDisabled(!haveSelection);
+    if (ImGui::MenuItem("Копировать")) {
+        const int n = doc.CopyKeys(host.SelectedId(), tracks, from, to, m_clipboard);
+        host.SetStatus("Скопировано ключей: " + std::to_string(n));
+    }
+    ImGui::EndDisabled();
+
+    ImGui::BeginDisabled(m_clipboard.Empty() || host.SelectedId() < 0);
+    if (ImGui::MenuItem("Вставить на головку")) {
+        host.PushUndo();
+        const int n = doc.PasteKeys(host.SelectedId(), m_clipboard, host.CurrentTime());
+        host.SetStatus("Вставлено ключей: " + std::to_string(n));
+        host.SetCurrentTime(host.CurrentTime()); // переприменить документ к сцене
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Ключи лягут на ВЫБРАННЫЙ сейчас объект.\n"
+                          "Так анимация переносится между объектами:\n"
+                          "скопировать у одного, выбрать другой, вставить.");
+    }
+    ImGui::EndDisabled();
+
+    ImGui::Separator();
+
+    ImGui::BeginDisabled(!haveSelection);
+    ImGui::SetNextItemWidth(120.0f);
+    ImGui::DragFloat("Множитель", &m_scaleFactor, 0.01f, 0.05f, 20.0f, "%.2fx");
+    if (ImGui::MenuItem("Растянуть во времени")) {
+        host.PushUndo();
+        // Точка опоры — ЛЕВЫЙ край выделения: растягивая кусок, аниматор ждёт,
+        // что его начало останется на месте, а сдвинется хвост.
+        const int n = doc.ScaleKeyTimes(host.SelectedId(), tracks, from, to, from, m_scaleFactor);
+        host.SetStatus("Растянуто ключей: " + std::to_string(n));
+        host.SetCurrentTime(host.CurrentTime());
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Движение получилось правильным, но слишком быстрым\n"
+                          "или медленным: растянуть весь кусок, сохранив рисунок.");
+    }
+    ImGui::EndDisabled();
+
+    ImGui::Separator();
+
+    ImGui::BeginDisabled(!haveSelection);
+    if (ImGui::MenuItem("Запечь в ключи по кадрам")) {
+        host.PushUndo();
+        int n = 0;
+        for (int id : tracks) {
+            if (Track* track = doc.TrackById(id)) n += doc.BakeTrack(*track, from, to, doc.Fps);
+        }
+        host.SetStatus("Запечено ключей: " + std::to_string(n));
+        host.SetCurrentTime(host.CurrentTime());
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Кривая превращается в ключ на каждом кадре.\n"
+                          "Нужно, чтобы править отдельные кадры руками\n"
+                          "и чтобы отдать анимацию туда, где нет Безье.\n"
+                          "Форма сохранится, но сглаживание уже не вернуть.");
+    }
+    ImGui::EndDisabled();
+
+    ImGui::EndMenu();
+}
+
 void TimelinePanel::DrawGraphMenu(DirectorHost& host) {
     int hidden = 0;
     for (const Track& t : host.Document().Tracks) {
@@ -1361,6 +1468,8 @@ void TimelinePanel::Draw(DirectorHost& host) {
             }
             ImGui::EndPopup();
         }
+        ImGui::SameLine();
+        DrawKeyOpsMenu(host);
         if (m_tab == 1) {
             ImGui::SameLine();
             DrawGraphMenu(host);
@@ -1428,8 +1537,32 @@ void TimelinePanel::Draw(DirectorHost& host) {
     ImGui::InvisibleButton("##scrub", ImVec2(l.Width, l.Height));
     const bool scrubHovered = ImGui::IsItemHovered();
     if (scrubHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-        m_draggingPlayhead = true;
-        m_selectedKeys.clear(); // клик по пустому месту снимает выбор ключей
+        // Shift переключает жест на РАМКУ выделения. Именно модификатор, а не
+        // отдельная область: перетаскивание головки — главное действие в
+        // таймлайне, и отбирать у него пустое место нельзя.
+        if (ImGui::GetIO().KeyShift) {
+            m_boxSelecting = true;
+            m_boxAdditive = ImGui::GetIO().KeyCtrl;
+            m_boxStart = m_boxEnd = ImGui::GetIO().MousePos;
+            if (!m_boxAdditive) m_selectedKeys.clear();
+        } else {
+            m_draggingPlayhead = true;
+            m_selectedKeys.clear(); // клик по пустому месту снимает выбор ключей
+        }
+    }
+
+    if (m_boxSelecting) {
+        m_boxEnd = ImGui::GetIO().MousePos;
+        // Рамку рисуем поверх всего: она — обратная связь жеста, и прятать её
+        // за дорожками незачем.
+        const ImVec2 a(std::min(m_boxStart.x, m_boxEnd.x), std::min(m_boxStart.y, m_boxEnd.y));
+        const ImVec2 b(std::max(m_boxStart.x, m_boxEnd.x), std::max(m_boxStart.y, m_boxEnd.y));
+        dl->AddRectFilled(a, b, IM_COL32(80, 160, 235, 40));
+        dl->AddRect(a, b, IM_COL32(120, 190, 250, 200), 0.0f, 0, 1.2f);
+        if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            m_boxSelecting = false;
+            host.SetStatus("Выбрано ключей: " + std::to_string(m_selectedKeys.size()));
+        }
     }
     if (m_draggingPlayhead) {
         if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {

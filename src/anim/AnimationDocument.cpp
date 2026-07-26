@@ -234,6 +234,158 @@ bool AnimationDocument::HasKeyAt(const Track& track, float time) const {
     return false;
 }
 
+// ============================================================================
+//  Операции над ключами
+// ============================================================================
+
+namespace {
+
+// Попадает ли дорожка в запрошенный набор. Пустой набор значит «все».
+bool WantedTrack(const std::vector<int>& trackIds, int id) {
+    if (trackIds.empty()) return true;
+    return std::find(trackIds.begin(), trackIds.end(), id) != trackIds.end();
+}
+
+} // namespace
+
+int AnimationDocument::CopyKeys(int targetId, const std::vector<int>& trackIds, float from,
+                                float to, KeyClipboard& out) const {
+    out.Clear();
+    if (to < from) std::swap(from, to);
+
+    // Начало отсчёта — ЛЕВЫЙ КРАЙ ДИАПАЗОНА, а не время первого попавшего
+    // ключа. Иначе вставка съезжала бы: выделили отрезок с паузой в начале —
+    // пауза при вставке пропала бы, и рисунок сместился.
+    for (const Track& track : Tracks) {
+        if (track.TargetId != targetId || !WantedTrack(trackIds, track.Id)) continue;
+        for (int c = 0; c < track.ChannelCount(); ++c) {
+            for (const Keyframe& k : track.Channels[(size_t)c].Keys()) {
+                if (k.Time < from - Curve::kTimeEpsilon || k.Time > to + Curve::kTimeEpsilon) continue;
+                ClipboardKey copy;
+                copy.Prop = track.Prop;
+                copy.Joint = track.Joint;
+                copy.Channel = c;
+                copy.Offset = k.Time - from;
+                copy.Key = k;
+                out.Keys.push_back(copy);
+            }
+        }
+    }
+    return (int)out.Keys.size();
+}
+
+int AnimationDocument::PasteKeys(int targetId, const KeyClipboard& clip, float atTime) {
+    int pasted = 0;
+    for (const ClipboardKey& c : clip.Keys) {
+        Track& track = EnsureTrack(targetId, c.Prop, c.Joint);
+        if (c.Channel >= track.ChannelCount()) continue; // буфер от свойства с другим числом каналов
+        Curve& curve = track.Channels[(size_t)c.Channel];
+        const int index = curve.SetKey(atTime + c.Offset, c.Key.Value, c.Key.Mode);
+        // Касательные переносим отдельно: SetKey знает только значение и режим,
+        // а ручки Безье — это форма, ради которой ключ и копировали.
+        Keyframe& placed = curve.AtMutable(index);
+        placed.InTangent = c.Key.InTangent;
+        placed.OutTangent = c.Key.OutTangent;
+        ++pasted;
+    }
+    return pasted;
+}
+
+int AnimationDocument::ScaleKeyTimes(int targetId, const std::vector<int>& trackIds, float from,
+                                     float to, float pivot, float factor) {
+    if (factor <= 0.0f) return 0;
+    if (to < from) std::swap(from, to);
+
+    int moved = 0;
+    for (Track& track : Tracks) {
+        if (track.TargetId != targetId || track.Locked || !WantedTrack(trackIds, track.Id)) continue;
+        for (Curve& curve : track.Channels) {
+            // Собираем новые времена ДО правки: menять времена на месте нельзя,
+            // кривая держит ключи отсортированными, и перестановка посреди
+            // обхода сбила бы индексы.
+            std::vector<Keyframe> kept;
+            std::vector<Keyframe> scaled;
+            for (const Keyframe& k : curve.Keys()) {
+                if (k.Time < from - Curve::kTimeEpsilon || k.Time > to + Curve::kTimeEpsilon) {
+                    kept.push_back(k);
+                    continue;
+                }
+                Keyframe moved_key = k;
+                moved_key.Time = pivot + (k.Time - pivot) * factor;
+                // Касательные заданы в «значение за секунду»: растянув время,
+                // надо поделить наклон, иначе форма кривой поедет.
+                moved_key.InTangent /= factor;
+                moved_key.OutTangent /= factor;
+                scaled.push_back(moved_key);
+                ++moved;
+            }
+            if (scaled.empty()) continue;
+
+            curve.Clear();
+            for (const Keyframe& k : kept) {
+                const int i = curve.SetKey(k.Time, k.Value, k.Mode);
+                curve.AtMutable(i).InTangent = k.InTangent;
+                curve.AtMutable(i).OutTangent = k.OutTangent;
+            }
+            for (const Keyframe& k : scaled) {
+                const int i = curve.SetKey(k.Time, k.Value, k.Mode);
+                curve.AtMutable(i).InTangent = k.InTangent;
+                curve.AtMutable(i).OutTangent = k.OutTangent;
+            }
+        }
+    }
+    return moved;
+}
+
+int AnimationDocument::BakeTrack(Track& track, float from, float to, float fps) {
+    if (fps <= 0.0f) return 0;
+    if (to < from) std::swap(from, to);
+
+    int baked = 0;
+    for (Curve& curve : track.Channels) {
+        if (curve.Empty()) continue;
+
+        // Сэмплируем ДО очистки: значения читаются со старой кривой, а пишутся
+        // в новую. Делать это на месте нельзя — уже поставленные ключи меняли
+        // бы результат сэмплирования следующих.
+        const int firstFrame = (int)std::lround(from * fps);
+        const int lastFrame = (int)std::lround(to * fps);
+        std::vector<Keyframe> samples;
+        samples.reserve((size_t)std::max(lastFrame - firstFrame + 1, 1));
+        for (int f = firstFrame; f <= lastFrame; ++f) {
+            Keyframe k;
+            k.Time = (float)f / fps;
+            k.Value = curve.Evaluate(k.Time);
+            // Линейная, а не сглаженная: между соседними кадрами сглаживать
+            // нечего, а авто-касательные заново придумали бы форму, которую мы
+            // только что зафиксировали покадрово.
+            k.Mode = Interp::Linear;
+            samples.push_back(k);
+        }
+
+        // Ключи ВНЕ диапазона сохраняем: запекают обычно кусок, а не всю
+        // дорожку, и стирать остальное — это потеря работы без спроса.
+        std::vector<Keyframe> outside;
+        for (const Keyframe& k : curve.Keys()) {
+            if (k.Time < from - Curve::kTimeEpsilon || k.Time > to + Curve::kTimeEpsilon) {
+                outside.push_back(k);
+            }
+        }
+
+        curve.Clear();
+        for (const Keyframe& k : outside) {
+            const int i = curve.SetKey(k.Time, k.Value, k.Mode);
+            curve.AtMutable(i).InTangent = k.InTangent;
+            curve.AtMutable(i).OutTangent = k.OutTangent;
+        }
+        for (const Keyframe& k : samples) {
+            curve.SetKey(k.Time, k.Value, k.Mode);
+            ++baked;
+        }
+    }
+    return baked;
+}
+
 bool AnimationDocument::PrevKeyTime(float from, float& out) const {
     bool found = false;
     float best = 0.0f;
