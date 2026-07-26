@@ -1,5 +1,6 @@
 #include "SelfTest.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -131,6 +132,52 @@ void TestCurves() {
     bezier.AtMutable(0).OutTangent = 3.0f;
     bezier.AtMutable(1).InTangent = 0.0f;
     Check(bezier.Evaluate(0.5f) > 0.5f, "касательная на выходе поднимает кривую");
+
+    // КУРСОР сегмента — это кэш, и главное его свойство: он не должен менять
+    // ответ. Проверяем самым прямым способом — считаем одну и ту же кривую в
+    // трёх порядках обхода. Вперёд курсор попадает почти всегда, назад
+    // промахивается на каждом шаге, вразнобой — как придётся; все три обязаны
+    // совпасть до последнего бита, иначе кэш где-то «залипает».
+    {
+        Curve dense;
+        for (int i = 0; i < 40; ++i) {
+            const float t = (float)i * 0.25f;
+            dense.SetKey(t, std::sin(t) * 3.0f + (float)(i % 5),
+                         i % 3 == 0 ? Interp::Linear : Interp::Smooth);
+        }
+
+        std::vector<float> times;
+        for (int i = 0; i <= 400; ++i) times.push_back((float)i * 0.025f);
+
+        std::vector<float> forward, backward, shuffled;
+        for (float t : times) forward.push_back(dense.Evaluate(t));
+        for (size_t i = times.size(); i-- > 0;) backward.push_back(dense.Evaluate(times[i]));
+        std::reverse(backward.begin(), backward.end());
+        // Псевдослучайный порядок без <random>: шаг, взаимно простой с длиной.
+        shuffled.resize(times.size());
+        for (size_t i = 0; i < times.size(); ++i) {
+            const size_t j = (i * 173u + 61u) % times.size();
+            shuffled[j] = dense.Evaluate(times[j]);
+        }
+
+        bool sameBackward = true, sameShuffled = true;
+        for (size_t i = 0; i < times.size(); ++i) {
+            if (forward[i] != backward[i]) sameBackward = false;
+            if (forward[i] != shuffled[i]) sameShuffled = false;
+        }
+        Check(sameBackward, "обход назад даёт те же значения, что и вперёд");
+        Check(sameShuffled, "обход вразнобой даёт те же значения, что и вперёд");
+
+        // Правка ключей обязана сбросить курсор: иначе он указывал бы на
+        // сегмент, которого уже нет, и следующий запрос вернул бы старое.
+        const float before = dense.Evaluate(5.0f);
+        dense.SetKey(5.0f, before + 100.0f, Interp::Linear);
+        CheckNear(dense.Evaluate(5.0f), before + 100.0f, 1e-3f,
+                  "после правки ключа кривая отдаёт новое значение");
+        dense.RemoveKey(0);
+        Check(dense.Evaluate(0.0f) == dense.At(0).Value,
+              "после удаления первого ключа начало кривой пересчитано");
+    }
 
     // Битый файл: неотсортированные ключи с дубликатами чинятся Normalize.
     Curve messy;

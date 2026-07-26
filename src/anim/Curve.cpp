@@ -84,12 +84,42 @@ int Curve::KeyIndexAt(float time) const {
 
 int Curve::SegmentIndexAt(float time) const {
     if (m_keys.empty()) return -1;
+
+    // КУРСОР. Двоичный поиск по ключам стоит log(N) сравнений, и платится он не
+    // один раз, а на каждый КАНАЛ каждой дорожки каждый кадр — при
+    // проигрывании, при перемотке и на каждом кадре экспорта.
+    //
+    // Между тем обращения почти всегда идут ПОДРЯД: время идёт вперёд мелкими
+    // шагами, и следующий запрос попадает либо в тот же сегмент, либо в
+    // соседний. Поэтому сначала проверяем запомненный сегмент и его соседа
+    // справа — две сравнения вместо логарифма, — и только при промахе (прыжок
+    // головки, обратное проигрывание, первый вызов) идём в двоичный поиск.
+    //
+    // Курсор — чистый кэш: он не влияет на результат, поэтому mutable, а
+    // Evaluate остаётся const. Любая правка ключей его сбрасывает (см.
+    // InvalidateCursor) — иначе он указывал бы на сегмент, которого уже нет.
+    const int count = (int)m_keys.size();
+    if (m_cursor >= 0 && m_cursor < count) {
+        const float begin = m_keys[(size_t)m_cursor].Time;
+        if (time >= begin) {
+            if (m_cursor + 1 >= count || time < m_keys[(size_t)m_cursor + 1].Time) {
+                return m_cursor; // тот же сегмент
+            }
+            if (m_cursor + 2 >= count || time < m_keys[(size_t)m_cursor + 2].Time) {
+                m_cursor += 1;   // соседний справа
+                return m_cursor;
+            }
+        }
+    }
+
     auto it = std::upper_bound(m_keys.begin(), m_keys.end(), time,
                                [](float t, const Keyframe& k) { return t < k.Time; });
-    return (int)std::distance(m_keys.begin(), it) - 1;
+    m_cursor = (int)std::distance(m_keys.begin(), it) - 1;
+    return m_cursor;
 }
 
 int Curve::SetKey(float time, float value, Interp mode) {
+    InvalidateCursor(); // ключи меняются — запомненный сегмент больше не верен
     int existing = KeyIndexAt(time);
     if (existing >= 0) {
         // Ключ на этом кадре уже стоит — обновляем значение, СОХРАНЯЯ настроенную
@@ -111,12 +141,14 @@ int Curve::SetKey(float time, float value, Interp mode) {
 }
 
 bool Curve::RemoveKey(int index) {
+    InvalidateCursor(); // ключи меняются — запомненный сегмент больше не верен
     if (index < 0 || index >= (int)m_keys.size()) return false;
     m_keys.erase(m_keys.begin() + index);
     return true;
 }
 
 int Curve::MoveKey(int index, float newTime, float newValue) {
+    InvalidateCursor(); // ключи меняются — запомненный сегмент больше не верен
     if (index < 0 || index >= (int)m_keys.size()) return index;
     Keyframe moved = m_keys[(size_t)index];
     moved.Time = newTime;
@@ -158,6 +190,7 @@ void Curve::EffectiveTangents(int index, float& outIn, float& outOut) const {
 }
 
 void Curve::ConvertToBezier(int index) {
+    InvalidateCursor(); // ключи меняются — запомненный сегмент больше не верен
     if (index < 0 || index >= (int)m_keys.size()) return;
     float in = 0.0f, out = 0.0f;
     EffectiveTangents(index, in, out);
@@ -218,6 +251,7 @@ void Curve::ValueRange(float& outMin, float& outMax) const {
 }
 
 void Curve::Normalize() {
+    InvalidateCursor(); // ключи меняются — запомненный сегмент больше не верен
     std::stable_sort(m_keys.begin(), m_keys.end(),
                      [](const Keyframe& a, const Keyframe& b) { return a.Time < b.Time; });
     // Схлопываем дубликаты по времени: остаётся первый в порядке файла

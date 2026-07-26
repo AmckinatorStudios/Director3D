@@ -115,14 +115,51 @@ public:
     static CameraFrameInfo CameraFrameOf(Scene& scene, int cameraEntityId, float aspect);
 
 private:
+    // ------------------------------------------------------------------------
+    // Описание кадра: ЧТО в него входит и куда он пишется.
+    //
+    // Последовательность проходов — небо, геометрия, сетка, служебная графика,
+    // пост-обработка, подсветка выделения — задана ОДИН раз, в RenderFrame.
+    // Рабочий вьюпорт, Render View и экспорт отличаются только этим описанием.
+    //
+    // Это не абстракция ради абстракции: раньше последовательность стояла в двух
+    // местах (превью камеры и экспорт), и любой новый проход надо было
+    // дописывать в оба, помня, что в третьем — вьюпорте — он идёт вперемешку со
+    // служебной графикой. Теперь новый проход добавляется одной строкой в
+    // RenderFrame и одним полем здесь.
+    //
+    // Указатели, а не флаги: nullptr значит «этого прохода в кадре нет», и
+    // выключить проход нельзя, забыв заполнить его данные.
+    struct FrameDesc {
+        glm::mat4 View{1.0f};
+        glm::mat4 Proj{1.0f};
+        glm::vec3 ViewPos{0.0f};
+
+        Framebuffer* Hdr = nullptr;      // куда рисуется сцена (обязателен)
+        Framebuffer* Output = nullptr;   // куда пишет пост-обработка
+        sage::render::PostFX* Fx = nullptr; // nullptr — кадр без пост-обработки
+        sage::render::PostFXSettings FxSettings;
+
+        ShadingMode Shading = ShadingMode::Shaded;
+        glm::vec4 ClearColor{0.106f, 0.114f, 0.133f, 1.0f};
+        bool Sky = true;
+
+        // Служебная графика рабочего вида. Всё nullptr — чистовой кадр.
+        const sage::render::GridSettings* Grid = nullptr;
+        const ViewportOverlays* Helpers = nullptr;
+        const std::vector<int>* Outline = nullptr;
+        float HelperAspect = 1.777f;
+    };
+
+    // Единственное место, где записана последовательность проходов кадра.
+    // Возвращает буфер, в котором лежит результат (Hdr или Output).
+    Framebuffer& RenderFrame(Scene& scene, const LightingEnvironment& env, const FrameDesc& desc);
+
     void DrawScene(Scene& scene, const LightingEnvironment& env, const glm::mat4& view,
                    const glm::mat4& proj, const glm::vec3& viewPos, ShadingMode shading);
     // Небо кадра: кубическая текстура из каталога сцены, если он задан, иначе
     // процедурный градиент. Одна точка на вьюпорт, Render View и экспорт.
     void DrawSky(const LightingEnvironment& env, const glm::mat4& view, const glm::mat4& proj);
-    // Общая отрисовка чистового кадра (превью и экспорт идут через неё).
-    bool DrawCameraFrame(Scene& scene, const LightingEnvironment& env,
-                         const CameraFrameInfo& frame, Framebuffer& target);
     // Дистанция автофокуса: до ближайшего объекта под центром кадра. Оператору
     // достаточно навести камеру, а не подбирать метры руками.
     static float AutoFocusDistance(Scene& scene, const CameraFrameInfo& frame);

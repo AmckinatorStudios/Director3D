@@ -392,87 +392,119 @@ void StageRenderer::RenderStage(Scene& scene, Camera& camera, const LightingEnvi
 
     const glm::vec3 viewPos = glm::vec3(glm::inverse(outView)[3]);
 
-    HiddenObjects hidden(scene);
-
     m_stageFbo->Resize(m_stageW, m_stageH);
-    m_stageFbo->Bind();
-    device.SetClearColor(0.106f, 0.114f, 0.133f, 1.0f);
-    device.Clear();
+    m_stagePostFbo->Resize(m_stageW, m_stageH);
 
-    DrawSky(env, outView, outProj);
-    DrawScene(scene, env, outView, outProj, viewPos, shading);
-
-    // Сетка — ПОСЛЕ геометрии и ДО остальной служебной графики: она
-    // полупрозрачна и должна смешиваться с уже нарисованной сценой, а каркасы
-    // камер и светов должны ложиться поверх неё.
-    if (overlays.Grid) {
-        sage::render::GridSettings grid = overlays.GridConfig;
-        grid.Enabled = true;
-        m_grid.Draw(outView, outProj, viewPos, grid);
-    }
-
-    // Служебная графика — в тот же буфер с тестом глубины, чтобы объекты
-    // корректно заслоняли сетку.
-    DrawHelpers(scene, overlays, selection, aspect);
-    m_debug->Flush(outView, outProj);
+    FrameDesc d;
+    d.View = outView;
+    d.Proj = outProj;
+    d.ViewPos = viewPos;
+    d.Hdr = &*m_stageFbo;
+    d.Shading = shading;
+    d.HelperAspect = aspect;
+    d.Helpers = &overlays;
+    if (overlays.Grid) d.Grid = &overlays.GridConfig;
+    if (overlays.Outline && !selection.empty()) d.Outline = &selection;
 
     // Пост-обработка только в полном затенении: отладочные режимы должны
-    // показывать сырые данные, а не «красивую картинку».
-    m_stagePostApplied = false;
-    if (shading == ShadingMode::Shaded) {
-        m_stagePostFbo->Resize(m_stageW, m_stageH);
-        m_stagePostfx->Render(m_stageFbo->ColorTexture(), m_stageFbo->DepthTexture(),
-                              m_stageFbo->Width(), m_stageFbo->Height(), outProj, outView,
-                              PostFXOf(scene, sceneCameraId, CameraFrameOf(scene, sceneCameraId, aspect),
-                                       /*cinematic=*/preset == ViewPreset::SceneCamera),
-                              &*m_stagePostFbo, 0, 0, m_stageW, m_stageH);
-        m_stagePostApplied = true;
+    // показывать сырые данные, а не «красивую картинку». Отсутствие Fx/Output и
+    // означает «кадр без пост-обработки» — отдельного флага для этого нет.
+    m_stagePostApplied = (shading == ShadingMode::Shaded);
+    if (m_stagePostApplied) {
+        d.Output = &*m_stagePostFbo;
+        d.Fx = &*m_stagePostfx;
+        // Оптика камеры (глубина резкости, смаз, аберрация) включается только
+        // когда вьюпорт СМОТРИТ камерой сцены: у свободной камеры своя позиция,
+        // и чужая дистанция фокуса замылила бы всё рабочее поле.
+        d.FxSettings = PostFXOf(scene, sceneCameraId, CameraFrameOf(scene, sceneCameraId, aspect),
+                                /*cinematic=*/preset == ViewPreset::SceneCamera);
     }
 
-    if (overlays.Outline && !selection.empty()) {
-        RenderOutline(scene, selection, outView, outProj,
-                      m_stagePostApplied ? *m_stagePostFbo : *m_stageFbo);
+    RenderFrame(scene, env, d);
+}
+
+// ============================================================================
+//  Кадр
+// ============================================================================
+
+// ЕДИНСТВЕННОЕ место, где записан порядок проходов. Всё, что рисует
+// инструмент — рабочий вьюпорт, Render View, кадр экспорта, — проходит здесь;
+// отличаются они только описанием (FrameDesc), а не своей копией
+// последовательности.
+Framebuffer& StageRenderer::RenderFrame(Scene& scene, const LightingEnvironment& env,
+                                        const FrameDesc& d) {
+    sage::rhi::GraphicsDevice& device = sage::Application::Get().Device();
+    HiddenObjects hidden(scene); // погашенное глазком не рисуется и не светит
+
+    // --- Проход 1: очистка и небо ---
+    d.Hdr->Bind();
+    device.SetClearColor(d.ClearColor.r, d.ClearColor.g, d.ClearColor.b, d.ClearColor.a);
+    device.Clear();
+    if (d.Sky) DrawSky(env, d.View, d.Proj);
+
+    // --- Проход 2: геометрия (батч + скелетные модели + частицы) ---
+    DrawScene(scene, env, d.View, d.Proj, d.ViewPos, d.Shading);
+
+    // --- Проход 3: сетка ---
+    // После геометрии и ДО служебной графики: она полупрозрачна и должна
+    // смешиваться с уже нарисованной сценой, а каркасы камер и светов должны
+    // ложиться поверх неё.
+    if (d.Grid) {
+        sage::render::GridSettings grid = *d.Grid;
+        grid.Enabled = true;
+        m_grid.Draw(d.View, d.Proj, d.ViewPos, grid);
+    }
+
+    // --- Проход 4: служебная графика вьюпорта ---
+    // В тот же буфер и с тестом глубины, чтобы объекты корректно её заслоняли.
+    if (d.Helpers) {
+        DrawHelpers(scene, *d.Helpers, d.Outline ? *d.Outline : std::vector<int>{},
+                    d.HelperAspect);
+        m_debug->Flush(d.View, d.Proj);
+    }
+
+    // --- Проход 5: пост-обработка ---
+    Framebuffer* result = d.Hdr;
+    if (d.Fx && d.Output) {
+        d.Fx->Render(d.Hdr->ColorTexture(), d.Hdr->DepthTexture(), d.Hdr->Width(), d.Hdr->Height(),
+                     d.Proj, d.View, d.FxSettings, d.Output, 0, 0, d.Output->Width(),
+                     d.Output->Height());
+        result = d.Output;
+    }
+
+    // --- Проход 6: подсветка выделения ---
+    // Строго последней и поверх результата пост-обработки: обводка — это
+    // указание инструмента, а не часть изображения, и тон-маппинг её съел бы.
+    if (d.Outline && !d.Outline->empty()) {
+        RenderOutline(scene, *d.Outline, d.View, d.Proj, *result);
     }
 
     device.BindDefaultFramebuffer();
-}
-
-// Рисует сцену камерой в переданный HDR-буфер. Общая часть превью и экспорта:
-// чистовой кадр в обоих случаях обязан строиться ОДНИМ кодом, иначе записанный
-// файл начнёт расходиться с тем, что оператор видел на экране.
-bool StageRenderer::DrawCameraFrame(Scene& scene, const LightingEnvironment& env,
-                                    const CameraFrameInfo& frame, Framebuffer& target) {
-    if (!frame.HasCamera) return false;
-
-    sage::rhi::GraphicsDevice& device = sage::Application::Get().Device();
-    HiddenObjects hidden(scene);
-
-    target.Bind();
-    device.SetClearColor(env.SkyColor.r * 0.85f, env.SkyColor.g * 0.85f, env.SkyColor.b * 0.85f, 1.0f);
-    device.Clear();
-
-    DrawSky(env, frame.View, frame.Proj);
-    // Чистовой кадр — всегда полное затенение и без служебной графики.
-    DrawScene(scene, env, frame.View, frame.Proj, frame.Position, ShadingMode::Shaded);
-    return true;
+    return *result;
 }
 
 bool StageRenderer::RenderCameraView(Scene& scene, const LightingEnvironment& env, int cameraEntityId) {
     m_viewPostApplied = false;
 
     const float aspect = (float)m_viewW / (float)std::max(m_viewH, 1);
-    CameraFrameInfo frame = CameraFrameOf(scene, cameraEntityId, aspect);
+    const CameraFrameInfo frame = CameraFrameOf(scene, cameraEntityId, aspect);
     if (!frame.HasCamera) return false;
 
     m_viewFbo->Resize(m_viewW, m_viewH);
     m_viewPostFbo->Resize(m_viewW, m_viewH);
-    if (!DrawCameraFrame(scene, env, frame, *m_viewFbo)) return false;
 
-    m_viewPostfx->Render(m_viewFbo->ColorTexture(), m_viewFbo->DepthTexture(),
-                         m_viewFbo->Width(), m_viewFbo->Height(), frame.Proj, frame.View,
-                         PostFXOf(scene, cameraEntityId, frame, /*cinematic=*/true), &*m_viewPostFbo, 0, 0, m_viewW, m_viewH);
+    FrameDesc d;
+    d.View = frame.View;
+    d.Proj = frame.Proj;
+    d.ViewPos = frame.Position;
+    d.Hdr = &*m_viewFbo;
+    d.Output = &*m_viewPostFbo;
+    d.Fx = &*m_viewPostfx;
+    d.FxSettings = PostFXOf(scene, cameraEntityId, frame, /*cinematic=*/true);
+    d.ClearColor = glm::vec4(env.SkyColor * 0.85f, 1.0f);
+    RenderFrame(scene, env, d);
+
     m_viewPostApplied = true;
-    sage::Application::Get().Device().BindDefaultFramebuffer();
     return true;
 }
 
@@ -498,16 +530,20 @@ bool StageRenderer::RenderToTarget(Scene& scene, const LightingEnvironment& env,
     if (!m_exportFbo || m_exportFbo->Width() != w || m_exportFbo->Height() != h) {
         m_exportFbo.emplace(w, h);
     }
-    if (!DrawCameraFrame(scene, env, frame, *m_exportFbo)) return false;
-
     // Отдельный экземпляр PostFX: у него своя история кадра для motion blur, и
     // экспорт не должен смешиваться с историей интерактивного превью.
     if (!m_exportPostfx) m_exportPostfx.emplace();
-    m_exportPostfx->Render(m_exportFbo->ColorTexture(), m_exportFbo->DepthTexture(), w, h,
-                           frame.Proj, frame.View, PostFXOf(scene, cameraEntityId, frame, /*cinematic=*/true),
-                           &target, 0, 0, w, h);
 
-    sage::Application::Get().Device().BindDefaultFramebuffer();
+    FrameDesc d;
+    d.View = frame.View;
+    d.Proj = frame.Proj;
+    d.ViewPos = frame.Position;
+    d.Hdr = &*m_exportFbo;
+    d.Output = &target;
+    d.Fx = &*m_exportPostfx;
+    d.FxSettings = PostFXOf(scene, cameraEntityId, frame, /*cinematic=*/true);
+    d.ClearColor = glm::vec4(env.SkyColor * 0.85f, 1.0f);
+    RenderFrame(scene, env, d);
     return true;
 }
 

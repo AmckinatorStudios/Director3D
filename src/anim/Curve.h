@@ -74,6 +74,11 @@ public:
     int KeyIndexAt(float time) const;
 
     // Индекс последнего ключа со временем <= time (-1, если все позже).
+    //
+    // Внутри держит КУРСОР — номер сегмента прошлого запроса. Обращения к
+    // кривой идут почти всегда подряд по времени, поэтому проверка курсора и
+    // его соседа отвечает без двоичного поиска. Кэш не меняет результат:
+    // Evaluate по-прежнему const и не зависит от истории вызовов.
     int SegmentIndexAt(float time) const;
 
     // Касательные, которые РЕАЛЬНО используются при отрисовке/расчёте сегмента
@@ -88,11 +93,15 @@ public:
     bool Empty() const { return m_keys.empty(); }
     int Count() const { return (int)m_keys.size(); }
     const std::vector<Keyframe>& Keys() const { return m_keys; }
-    std::vector<Keyframe>& KeysMutable() { return m_keys; } // для загрузки проекта
+    // Прямой доступ для загрузки проекта. Курсор сбрасывается сразу: вызывающий
+    // будет менять вектор, и после этого запомненный сегмент недействителен.
+    std::vector<Keyframe>& KeysMutable() { InvalidateCursor(); return m_keys; }
     const Keyframe& At(int i) const { return m_keys[(size_t)i]; }
-    Keyframe& AtMutable(int i) { return m_keys[(size_t)i]; }
+    // Правка ключа на месте. Курсор сбрасывается, потому что менять здесь
+    // можно и Time — а от него зависит, какой сегмент считается текущим.
+    Keyframe& AtMutable(int i) { InvalidateCursor(); return m_keys[(size_t)i]; }
 
-    void Clear() { m_keys.clear(); }
+    void Clear() { m_keys.clear(); InvalidateCursor(); }
 
     // Границы кривой по времени и по значению (для авто-масштаба графа).
     float FirstTime() const { return m_keys.empty() ? 0.0f : m_keys.front().Time; }
@@ -109,7 +118,16 @@ public:
     static constexpr float kTimeEpsilon = 1e-4f;
 
 private:
+    // Сбрасывает курсор. Зовётся из ЛЮБОЙ правки ключей: после вставки,
+    // удаления или перемещения запомненный номер сегмента может указывать на
+    // другой ключ или за пределы вектора.
+    void InvalidateCursor() const { m_cursor = -1; }
+
     std::vector<Keyframe> m_keys; // всегда отсортированы по Time
+    // Кэш последнего сегмента (см. SegmentIndexAt). mutable — это ускорение,
+    // а не состояние кривой: два одинаковых Curve дают одинаковые значения
+    // независимо от того, что у них в курсоре.
+    mutable int m_cursor = -1;
 };
 
 } // namespace d3d
