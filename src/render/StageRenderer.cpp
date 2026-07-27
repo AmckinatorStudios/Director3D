@@ -642,6 +642,48 @@ void StageRenderer::DrawHelpers(Scene& scene, const ViewportOverlays& overlays,
                              sel ? glm::vec3(1.0f, 0.78f, 0.25f) : glm::vec3(0.45f, 0.68f, 0.92f));
     }
 
+    // Ограничения — линия к цели и точки траектории.
+    //
+    // Связь «этот объект смотрит на тот» существует только в панели свойств, и
+    // пока она невидима, сцена выглядит так, будто объект движется сам по себе.
+    // Линия делает правило частью КАРТИНКИ: видно, что связано с чем, не
+    // выбирая каждый объект по очереди.
+    auto constrained = reg.view<ConstraintComponent, Transform, IdComponent>();
+    for (auto e : constrained) {
+        if (HiddenObjects::IsHidden(scene, e)) continue;
+        const ConstraintComponent& cc = constrained.get<ConstraintComponent>(e);
+        if (cc.Type == ConstraintType::None || cc.TargetId < 0) continue;
+        GameObject target = scene.Get(cc.TargetId);
+        if (!target.Valid()) continue;
+
+        const bool sel = isSelected(constrained.get<IdComponent>(e).Id);
+        const glm::vec3 from = glm::vec3(scene.WorldMatrix(e)[3]);
+        const glm::vec3 to = glm::vec3(scene.WorldMatrix(target.Entity())[3]);
+        // Выключенное силой правило рисуется тусклее: ноль в поле «Сила» —
+        // рабочее состояние (дорожка ещё не доехала), а не поломка.
+        const float w = std::clamp(cc.Influence, 0.0f, 1.0f);
+        const glm::vec3 tint = glm::vec3(0.35f + 0.55f * w, 0.75f, 0.45f + 0.35f * w);
+        m_debug->Line(from, to, tint * (sel ? 1.3f : 0.8f));
+        m_debug->WireSphere(to, sel ? 0.16f : 0.11f, tint * 0.9f, 8);
+
+        if (cc.Type == ConstraintType::Path) {
+            // Саму траекторию тоже показываем: без неё «положение 0.37» —
+            // число, к которому нечего отнести глазами.
+            const std::vector<glm::vec3> points = PathPoints(scene, cc.TargetId);
+            glm::vec3 prev, tangent;
+            const int steps = 48;
+            for (int i = 0; i <= steps; ++i) {
+                glm::vec3 p;
+                if (!SamplePath(points, (float)i / (float)steps, p, tangent)) break;
+                if (i > 0) m_debug->Line(prev, p, glm::vec3(0.95f, 0.72f, 0.30f));
+                prev = p;
+            }
+            for (const glm::vec3& p : points) {
+                m_debug->WireSphere(p, 0.13f, glm::vec3(0.95f, 0.72f, 0.30f), 8);
+            }
+        }
+    }
+
     // Свет — маркер в позиции; у выбранного дополнительно показываем зону
     // действия (сферу радиуса или конус прожектора).
     auto lights = reg.view<LightComponent, Transform, IdComponent>();

@@ -50,10 +50,43 @@ std::string ShortPath(const std::string& path) {
     return "…" + path.substr(cut);
 }
 
-void RowLabel(const char* label) {
+// Подсказка у знака вопроса рядом с подписью. Ограничения — единственное место
+// в программе, где надо сначала понять ИДЕЮ, а потом уже нажимать: «сила 0.4»
+// ничего не говорит тому, кто не знает, что она вообще смешивает. Поэтому
+// объяснения живут в самом интерфейсе, а не в документации, которую откроют
+// уже после того, как решат, что не работает.
+void Hint(const char* text) {
+    ImGui::SameLine();
+    ImGui::TextDisabled("(?)");
+    if (ImGui::IsItemHovered()) {
+        ImGui::BeginTooltip();
+        ImGui::PushTextWrapPos(ImGui::GetFontSize() * 26.0f);
+        ImGui::TextUnformatted(text);
+        ImGui::PopTextWrapPos();
+        ImGui::EndTooltip();
+    }
+}
+
+// hint непуст — рядом с подписью появляется «(?)». Знак ставится ВНУТРИ строки,
+// до перехода к полю ввода: снаружи, через SameLine после готовой строки, он
+// оказывался за правым краем панели и просто не был виден.
+void RowLabel(const char* label, const char* hint = nullptr) {
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted(label);
-    ImGui::SameLine(kLabelWidth);
+    if (hint && *hint) Hint(hint);
+
+    // Обычно поле начинается на общей колонке kLabelWidth — так все строки
+    // инспектора стоят в один столбик. Но «Положение (?)» в неё не влезает, а
+    // SameLine с меньшей координатой не переносит, а НАКЛАДЫВАЕТ поле поверх
+    // подписи. Поэтому берём максимум: одна строка с лёгким уступом читается,
+    // наползающий текст — нет.
+    float column = kLabelWidth;
+    if (hint && *hint) {
+        const float need = ImGui::CalcTextSize(label).x + ImGui::CalcTextSize(" (?)").x +
+                           ImGui::GetStyle().ItemSpacing.x * 2.0f;
+        column = std::max(column, need);
+    }
+    ImGui::SameLine(column);
 }
 
 // Три поля вектора с цветными подписями осей — раскладка одна на весь
@@ -185,9 +218,9 @@ bool PropertiesPanel::DrawVec3Row(DirectorHost& host, const char* label, float* 
 
 bool PropertiesPanel::DrawFloatRow(DirectorHost& host, const char* label, float* value,
                                    Property prop, float speed, float lo, float hi,
-                                   const char* format) {
+                                   const char* format, const char* hint) {
     ImGui::PushID(label);
-    RowLabel(label);
+    RowLabel(label, hint);
     ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - kKeyColumn);
     const bool changed = ImGui::DragFloat("##f", value, speed, lo, hi, format);
     host.TrackLastItem();
@@ -273,6 +306,150 @@ void PropertiesPanel::DrawMorphSection(DirectorHost& host) {
         host.SetStatus(T("Ключей на блендшейпах: ") + std::to_string(keyed));
     }
     ImGui::Spacing();
+}
+
+// --- Ограничения ------------------------------------------------------------
+
+void PropertiesPanel::DrawConstraintSection(DirectorHost& host, int entityId) {
+    Scene& scene = host.CurrentScene();
+    GameObject obj = scene.Get(entityId);
+    if (!obj.Valid()) return;
+    auto& reg = scene.Registry();
+
+    // Раздел раскрыт, когда правило УЖЕ есть, и свёрнут, когда его нет. У
+    // объекта без ограничения это лишние три строки на каждом выделении; у
+    // объекта с ограничением, наоборот, спрятанное правило — главная причина
+    // недоумения «почему он не слушается ключей».
+    ConstraintComponent* c = reg.try_get<ConstraintComponent>(obj.Entity());
+    const bool has = c && c->Type != ConstraintType::None;
+    if (!SectionHeader(T("Ограничение"), has)) return;
+    const int current = c ? (int)c->Type : 0;
+
+    ImGui::Spacing();
+    RowLabel(T("Правило"));
+    Hint(T("Ограничение — это ПРАВИЛО, которое доводит объект после анимации.\n\n"
+           "Вместо того чтобы ставить камере ключи поворота на каждый шаг героя, "
+           "вы говорите «смотри на него» — и камера остаётся правой после любой "
+           "переделки героя.\n\n"
+           "Считается в самом конце, поэтому попадает и в ролик, и в экспорт glTF: "
+           "там ограничения запекаются в обычную анимацию сами."));
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - kKeyColumn);
+    int type = current;
+    if (ImGui::Combo("##ctype", &type,
+                     T("Нет\0Смотреть на объект\0Следовать за объектом\0Двигаться по траектории\0"))) {
+        host.PushUndo();
+        if (type == 0) {
+            reg.remove<ConstraintComponent>(obj.Entity());
+            c = nullptr;
+        } else {
+            ConstraintComponent& made = reg.get_or_emplace<ConstraintComponent>(obj.Entity());
+            made.Type = (ConstraintType)type;
+            made.OffsetValid = false; // смена правила пересчитывает смещение
+            c = &made;
+        }
+        host.SetCurrentTime(host.CurrentTime()); // применить сразу, а не со следующего кадра
+    }
+    if (!c || c->Type == ConstraintType::None) return;
+
+    // --- Цель ---
+    const bool cycle = ConstraintCycle(scene, entityId);
+    RowLabel(T("Цель"));
+    if (cycle) {
+        // Кольцо не ломает программу — оно просто не применяется. Но молча не
+        // применяться хуже всего: человек видит, что ничего не происходит, и
+        // ищет причину в чём угодно, кроме собственного выбора цели.
+        ImGui::SameLine();
+        ImGui::PushStyleColor(ImGuiCol_Text, Theme::Colors::Record);
+        ImGui::TextUnformatted(T("кольцо!"));
+        ImGui::PopStyleColor();
+        Hint(T("Объекты ссылаются друг на друга по кругу: А смотрит на Б, Б смотрит на А. "
+               "Такое правило не применяется — иначе его пришлось бы считать бесконечно. "
+               "Выберите другую цель."));
+    }
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - kKeyColumn);
+    const std::string targetName = c->TargetId >= 0 && scene.Get(c->TargetId).Valid()
+                                       ? scene.Get(c->TargetId).Name()
+                                       : std::string(T("<не выбрана>"));
+    if (ImGui::BeginCombo("##ctarget", targetName.c_str())) {
+        auto view = reg.view<IdComponent, Transform>();
+        for (auto e : view) {
+            const int id = view.get<IdComponent>(e).Id;
+            if (id == entityId) continue; // сам на себя — бессмыслица
+            const std::string name = scene.Get(id).Name();
+            if (ImGui::Selectable(name.c_str(), id == c->TargetId)) {
+                host.PushUndo();
+                c->TargetId = id;
+                c->OffsetValid = false;
+                host.SetCurrentTime(host.CurrentTime());
+            }
+        }
+        ImGui::EndCombo();
+    }
+
+    // --- Сила ---
+    DrawFloatRow(host, T("Сила"), &c->Influence, Property::ConstraintInfluence,
+                 0.01f, 0.0f, 1.0f, "%.2f",
+                 T("0 — правило выключено, 1 — работает полностью. Между ними объект стоит "
+                   "посередине между «как было» и «как требует правило».\n\n"
+                   "Ставьте на неё КЛЮЧИ: камера, подхватывающая героя за полсекунды, "
+                   "выглядит как работа оператора, а мгновенный прыжок — как ошибка."));
+
+    switch (c->Type) {
+        case ConstraintType::LookAt: {
+            ImGui::Spacing();
+            ImGui::TextDisabled("%s", T("Объект разворачивается лицом к цели."));
+            Hint(T("Поворот считается целиком, поэтому собственные ключи поворота этого "
+                   "объекта перестают быть видны — при силе 1 их полностью перекрывает "
+                   "правило. Нужен и поворот, и слежение — уменьшите силу."));
+            break;
+        }
+        case ConstraintType::Parent: {
+            if (ImGui::Checkbox(T("Сохранять смещение"), &c->KeepOffset)) {
+                host.PushUndo();
+                c->OffsetValid = false;
+                host.SetCurrentTime(host.CurrentTime());
+            }
+            Hint(T("Объект остаётся там, где стоит сейчас, и дальше повторяет движение "
+                   "цели. Без этого он прыгнет ровно в её начало координат — так почти "
+                   "никогда не нужно.\n\n"
+                   "Смещение запоминается ОДИН раз, при включении. Чтобы взять его "
+                   "заново, переставьте объект и снимите-поставьте галочку."));
+            break;
+        }
+        case ConstraintType::Path: {
+            const std::vector<glm::vec3> points = PathPoints(scene, c->TargetId);
+            DrawFloatRow(host, T("Положение"), &c->Progress, Property::ConstraintProgress,
+                         0.005f, 0.0f, 1.0f, "%.3f",
+                         T("Где объект находится на траектории: 0 — начало, 1 — конец.\n\n"
+                           "Именно этим по пути и ЕДУТ: поставьте ключ 0 в начале ролика и "
+                           "ключ 1 в конце — объект пройдёт весь путь. Без ключей он просто "
+                           "стоит в начале."));
+
+            if (ImGui::Checkbox(T("Разворачивать по ходу"), &c->FollowTangent)) {
+                host.PushUndo();
+                host.SetCurrentTime(host.CurrentTime());
+            }
+            Hint(T("Объект смотрит туда, куда движется, — как машина на дороге. "
+                   "Выключите, если он должен сохранять свой поворот (например, "
+                   "летящая по дуге камера, смотрящая в сторону)."));
+
+            ImGui::Spacing();
+            if (points.size() < 2) {
+                ImGui::PushStyleColor(ImGuiCol_Text, Theme::Colors::Record);
+                ImGui::TextWrapped("%s", T("У цели нет точек пути."));
+                ImGui::PopStyleColor();
+            } else {
+                ImGui::TextDisabled(T("Точек пути: %d"), (int)points.size());
+            }
+            Hint(T("Траектория — это ПОТОМКИ выбранной цели, по порядку. Сделайте "
+                   "группу (Создать > Группа), положите в неё несколько объектов — "
+                   "и они станут точками пути.\n\n"
+                   "Кривая проходит ровно через них: точка ставится там, где объект "
+                   "должен оказаться, а не рядом."));
+            break;
+        }
+        default: break;
+    }
 }
 
 void PropertiesPanel::DrawIKSection(DirectorHost& host, int entityId, int joint) {
@@ -702,6 +879,9 @@ void PropertiesPanel::Draw(DirectorHost& host) {
             }
         }
     }
+
+    // --- Ограничения ---
+    if (!simple) DrawConstraintSection(host, id);
 
     // --- Дорожки этого объекта ---
     if (!simple) {

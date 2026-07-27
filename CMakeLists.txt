@@ -85,6 +85,7 @@ add_executable(Director3D
     src/anim/Curve.cpp
     src/anim/Binding.cpp
     src/anim/BonePose.cpp
+    src/anim/Constraints.cpp
     src/anim/AnimationDocument.cpp
     src/anim/Playback.cpp
     src/anim/AudioTrack.cpp

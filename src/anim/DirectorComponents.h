@@ -6,6 +6,8 @@
 
 #include "sage/anim/Skeleton.h"
 
+#include "anim/Constraints.h" // ConstraintComponent — тоже компонент инструмента
+
 // ---------------------------------------------------------------------------
 // Собственные компоненты Director 3D.
 //

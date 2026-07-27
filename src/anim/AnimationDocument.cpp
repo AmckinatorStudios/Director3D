@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include "anim/BonePose.h"
+#include "anim/Constraints.h"
 #include "anim/DirectorComponents.h"
 #include "sage/scene/Components.h"
 #include "sage/scene/Scene.h"
@@ -591,6 +592,12 @@ void AnimationDocument::Apply(Scene& scene, float time, bool seeking) const {
     // откатили undo). Переустанавливаем его каждый кадр — это дёшево и снимает
     // целый класс висячих указателей.
     SyncAllPoseOverrides(scene);
+
+    // Ограничения — ПОСЛЕДНИМИ, поверх всего, что насчитали кривые. Здесь, а не
+    // в вызывающем коде: так их видят одинаково вьюпорт, Render View, экспорт
+    // ролика и экспорт glTF. Забыть вызов на одном из путей стало невозможно, а
+    // в glTF ограничения запекаются сами — экспорт снимает готовые трансформы.
+    ApplyConstraints(scene);
 }
 
 float AnimationDocument::ContentEnd() const {

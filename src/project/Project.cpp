@@ -58,6 +58,21 @@ json SaveDirectorComponents(Scene& scene) {
         if (const SourceAssetComponent* a = reg.try_get<SourceAssetComponent>(e)) {
             if (!a->Path.empty()) { entry["sourceAsset"] = a->Path; any = true; }
         }
+        if (const ConstraintComponent* c = reg.try_get<ConstraintComponent>(e)) {
+            if (c->Type != ConstraintType::None) {
+                // Тип пишем СТРОКОЙ, а не числом: числа перемешаются при любой
+                // вставке нового вида ограничения в середину перечисления, и
+                // старые проекты молча получат чужое поведение.
+                entry["constraint"] = {
+                    {"type", ConstraintTypeName(c->Type)}, {"target", c->TargetId},
+                    {"influence", c->Influence},
+                    {"upAxis", {c->UpAxis.x, c->UpAxis.y, c->UpAxis.z}},
+                    {"keepOffset", c->KeepOffset}, {"progress", c->Progress},
+                    {"followTangent", c->FollowTangent},
+                };
+                any = true;
+            }
+        }
         if (const PoseComponent* p = reg.try_get<PoseComponent>(e)) {
             // Пишем ТОЛЬКО переопределённые кости: у персонажа их сотня, а
             // тронуты обычно единицы, и полный вектор раздул бы проект на
@@ -127,6 +142,28 @@ void LoadDirectorComponents(Scene& scene, const json& arr) {
             item.Visible = s.value("visible", true);
             item.Locked = s.value("locked", false);
             reg.emplace_or_replace<StageItemComponent>(e, item);
+        }
+        if (entry.contains("constraint")) {
+            const json& jc = entry["constraint"];
+            ConstraintComponent c;
+            const std::string type = jc.value("type", std::string("None"));
+            c.Type = type == "LookAt" ? ConstraintType::LookAt
+                   : type == "Parent" ? ConstraintType::Parent
+                   : type == "Path"   ? ConstraintType::Path
+                                      : ConstraintType::None;
+            c.TargetId = jc.value("target", -1);
+            c.Influence = jc.value("influence", 1.0f);
+            if (jc.contains("upAxis") && jc["upAxis"].size() == 3) {
+                c.UpAxis = {jc["upAxis"][0], jc["upAxis"][1], jc["upAxis"][2]};
+            }
+            c.KeepOffset = jc.value("keepOffset", true);
+            c.Progress = jc.value("progress", 0.0f);
+            c.FollowTangent = jc.value("followTangent", true);
+            // Смещение привязки НЕ сохраняем и не восстанавливаем: оно
+            // пересчитается при первом применении из фактического положения.
+            // Записать его в файл значило бы законсервировать расстановку
+            // объектов на момент сохранения — а её могли поменять.
+            reg.emplace_or_replace<ConstraintComponent>(e, c);
         }
         if (entry.contains("sourceAsset")) {
             reg.emplace_or_replace<SourceAssetComponent>(

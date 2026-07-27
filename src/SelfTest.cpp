@@ -22,6 +22,7 @@
 #include "sage/scene/Components.h"
 #include <nlohmann/json.hpp>
 
+#include "anim/Constraints.h"
 #include "export/GltfExporter.h"
 #include "sage/scene/Scene.h"
 #include "sage/scene/Transform.h"
@@ -1113,6 +1114,183 @@ void TestFileDialog() {
     }
 }
 
+// --- Ограничения -----------------------------------------------------------
+
+// Ограничение — правило, а не значение: проверять надо не «поле записалось», а
+// что объект РЕАЛЬНО оказался там, где правило требует. Поэтому здесь всюду
+// считается итоговый трансформ после Apply, тем же путём, каким его считает
+// вьюпорт и экспорт.
+void TestConstraints() {
+    Section("Ограничения");
+
+    auto scene = std::make_unique<Scene>();
+    auto& reg = scene->Registry();
+
+    GameObject watcher = scene->CreateObject("Watcher");
+    GameObject subject = scene->CreateObject("Subject");
+    watcher.GetTransform().Position = {0.0f, 0.0f, 0.0f};
+    subject.GetTransform().Position = {0.0f, 0.0f, -10.0f};
+
+    AnimationDocument doc;
+    doc.Duration = 4.0f;
+
+    // --- Слежение ---
+    ConstraintComponent& look = reg.emplace<ConstraintComponent>(watcher.Entity());
+    look.Type = ConstraintType::LookAt;
+    look.TargetId = subject.Id();
+
+    doc.Apply(*scene, 0.0f, true);
+    // Цель ровно по -Z, то есть «прямо перед» — все углы обязаны быть нулевыми.
+    // Это самый строгий случай: любая путаница со знаком или порядком осей
+    // выдаст здесь ненулевой угол.
+    CheckNear(watcher.GetTransform().Rotation.y, 0.0f, 0.05f, "взгляд вперёд не крутит объект");
+    CheckNear(watcher.GetTransform().Rotation.x, 0.0f, 0.05f, "и не задирает его");
+
+    // Цель справа: поворот на -90° вокруг Y (взгляд по -Z, поворот к +X).
+    subject.GetTransform().Position = {10.0f, 0.0f, 0.0f};
+    doc.Apply(*scene, 0.0f, true);
+    CheckNear(watcher.GetTransform().Rotation.y, -90.0f, 0.05f, "цель справа даёт -90° по Y");
+
+    // Цель сверху и впереди под 45°. Тангаж обязан выйти ПОЛОЖИТЕЛЬНЫМ: при
+    // нулевом рыскании forward = (0, sin x, -cos x), то есть взгляд вверх —
+    // это +45°. Первая версия проверки ждала здесь отрицательный угол, потому
+    // что я перенёс сюда наблюдение с камеры показа, у которой рыскание было
+    // -129°. Оно верно только для него (см. ниже, почему).
+    subject.GetTransform().Position = {0.0f, 10.0f, -10.0f};
+    doc.Apply(*scene, 0.0f, true);
+    CheckNear(watcher.GetTransform().Rotation.x, 45.0f, 0.05f, "цель сверху задирает взгляд вверх");
+    CheckNear(watcher.GetTransform().Rotation.y, 0.0f, 0.05f, "и не уводит по рысканию");
+
+    // Сила 0 обязана вернуть объекту его собственный поворот целиком.
+    watcher.GetTransform().Rotation = {11.0f, 22.0f, 33.0f};
+    look.Influence = 0.0f;
+    doc.Apply(*scene, 0.0f, true);
+    CheckNear(watcher.GetTransform().Rotation.y, 22.0f, 1e-3f, "при силе 0 правило не трогает объект");
+    look.Influence = 1.0f;
+
+    // --- Привязка ---
+    GameObject prop = scene->CreateObject("Prop");
+    GameObject hand = scene->CreateObject("Hand");
+    hand.GetTransform().Position = {1.0f, 2.0f, 3.0f};
+    prop.GetTransform().Position = {1.5f, 2.0f, 3.0f}; // полметра правее руки
+
+    ConstraintComponent& parent = reg.emplace<ConstraintComponent>(prop.Entity());
+    parent.Type = ConstraintType::Parent;
+    parent.TargetId = hand.Id();
+    parent.KeepOffset = true;
+
+    doc.Apply(*scene, 0.0f, true);
+    CheckNear(prop.GetTransform().Position.x, 1.5f, 1e-3f, "привязка не сдвигает объект при включении");
+
+    // Двигаем руку — предмет обязан пойти следом, сохранив те же полметра.
+    hand.GetTransform().Position = {5.0f, 2.0f, 3.0f};
+    doc.Apply(*scene, 0.0f, true);
+    CheckNear(prop.GetTransform().Position.x, 5.5f, 1e-3f, "предмет идёт за целью");
+    CheckNear(prop.GetTransform().Position.y, 2.0f, 1e-3f, "по остальным осям тоже");
+
+    // Без сохранения смещения — точно в цель.
+    parent.KeepOffset = false;
+    parent.OffsetValid = false;
+    doc.Apply(*scene, 0.0f, true);
+    CheckNear(prop.GetTransform().Position.x, 5.0f, 1e-3f, "без смещения объект встаёт в цель");
+
+    // --- Траектория ---
+    // Точки пути — потомки цели. Ставим их по прямой, чтобы результат можно
+    // было проверить арифметикой, а не «на глаз».
+    GameObject path = scene->CreateObject("Path");
+    for (int i = 0; i < 3; ++i) {
+        GameObject wp = scene->CreateObject("WP" + std::to_string(i));
+        wp.GetTransform().Position = {(float)i * 5.0f, 0.0f, 0.0f};
+        scene->SetParent(wp.Entity(), path.Entity());
+    }
+    const std::vector<glm::vec3> points = PathPoints(*scene, path.Id());
+    Check(points.size() == 3, "точки пути собраны из потомков цели");
+
+    glm::vec3 position, tangent;
+    Check(SamplePath(points, 0.0f, position, tangent), "путь сэмплируется");
+    CheckNear(position.x, 0.0f, 1e-3f, "в начале пути — первая точка");
+    Check(SamplePath(points, 1.0f, position, tangent), "и в конце тоже");
+    CheckNear(position.x, 10.0f, 1e-3f, "в конце пути — последняя точка");
+    Check(SamplePath(points, 0.5f, position, tangent), "и в середине");
+    CheckNear(position.x, 5.0f, 1e-3f, "середина прямого пути ровно посередине");
+    Check(tangent.x > 0.0f, "касательная смотрит вперёд по пути");
+    Check(!SamplePath({}, 0.5f, position, tangent), "пустой путь сэмплировать нечем");
+    Check(!SamplePath({glm::vec3(0.0f)}, 0.5f, position, tangent), "одной точки для пути мало");
+
+    GameObject rider = scene->CreateObject("Rider");
+    ConstraintComponent& follow = reg.emplace<ConstraintComponent>(rider.Entity());
+    follow.Type = ConstraintType::Path;
+    follow.TargetId = path.Id();
+    follow.FollowTangent = false;
+    follow.Progress = 0.5f;
+    doc.Apply(*scene, 0.0f, true);
+    CheckNear(rider.GetTransform().Position.x, 5.0f, 1e-3f, "объект встал на середину пути");
+
+    // Положение анимируемо — в этом весь смысл: без ключей объект стоит.
+    Track& progress = doc.EnsureTrack(rider.Id(), Property::ConstraintProgress);
+    progress.Channels[0].SetKey(0.0f, 0.0f, Interp::Linear);
+    progress.Channels[0].SetKey(4.0f, 1.0f, Interp::Linear);
+    doc.Apply(*scene, 0.0f, true);
+    CheckNear(rider.GetTransform().Position.x, 0.0f, 1e-3f, "по ключу 0 объект в начале пути");
+    doc.Apply(*scene, 4.0f, true);
+    CheckNear(rider.GetTransform().Position.x, 10.0f, 1e-3f, "по ключу 1 — в конце");
+    doc.Apply(*scene, 2.0f, true);
+    CheckNear(rider.GetTransform().Position.x, 5.0f, 1e-3f, "между ключами — посередине");
+
+    // --- Кольцевые ссылки ---
+    // Кольцо не должно ни зависать, ни применяться. Оба свойства проверяются:
+    // «не зависло» видно по тому, что мы дошли до следующей строки.
+    GameObject a = scene->CreateObject("A");
+    GameObject b = scene->CreateObject("B");
+    ConstraintComponent& ca = reg.emplace<ConstraintComponent>(a.Entity());
+    ConstraintComponent& cb = reg.emplace<ConstraintComponent>(b.Entity());
+    ca.Type = cb.Type = ConstraintType::LookAt;
+    ca.TargetId = b.Id();
+    cb.TargetId = a.Id();
+    a.GetTransform().Position = {1.0f, 0.0f, 0.0f};
+    b.GetTransform().Position = {0.0f, 0.0f, 1.0f};
+    a.GetTransform().Rotation = {7.0f, 7.0f, 7.0f};
+
+    Check(ConstraintCycle(*scene, a.Id()), "кольцо распознано");
+    Check(ConstraintCycle(*scene, b.Id()), "с обеих сторон");
+    Check(!ConstraintCycle(*scene, watcher.Id()), "обычная ссылка кольцом не считается");
+    doc.Apply(*scene, 0.0f, true);
+    CheckNear(a.GetTransform().Rotation.x, 7.0f, 1e-3f, "кольцевое правило не применилось");
+
+    // --- Порядок вычисления ---
+    // Цель обязана считаться РАНЬШЕ того, кто на неё ссылается: иначе камера
+    // навелась бы на вчерашнее положение героя, и промах был бы тем больше,
+    // чем быстрее герой движется.
+    scene->Registry().clear();
+    auto chain = std::make_unique<Scene>();
+    GameObject base = chain->CreateObject("Base");
+    GameObject mid = chain->CreateObject("Mid");
+    GameObject tip = chain->CreateObject("Tip");
+    ConstraintComponent& cm = chain->Registry().emplace<ConstraintComponent>(mid.Entity());
+    cm.Type = ConstraintType::Parent;
+    cm.TargetId = base.Id();
+    cm.KeepOffset = false;
+    ConstraintComponent& ct = chain->Registry().emplace<ConstraintComponent>(tip.Entity());
+    ct.Type = ConstraintType::Parent;
+    ct.TargetId = mid.Id();
+    ct.KeepOffset = false;
+
+    const std::vector<int> order = ConstraintOrder(*chain);
+    auto positionOf = [&](int id) {
+        return (int)(std::find(order.begin(), order.end(), id) - order.begin());
+    };
+    Check(positionOf(base.Id()) < positionOf(mid.Id()), "цель считается раньше зависимого");
+    Check(positionOf(mid.Id()) < positionOf(tip.Id()), "и так по всей цепочке");
+
+    base.GetTransform().Position = {3.0f, 0.0f, 0.0f};
+    AnimationDocument chainDoc;
+    chainDoc.Apply(*chain, 0.0f, true);
+    // Оба звена обязаны догнать основу ЗА ОДИН проход. Неверный порядок дал бы
+    // отставание на кадр у хвоста цепочки.
+    CheckNear(mid.GetTransform().Position.x, 3.0f, 1e-3f, "первое звено догнало основу");
+    CheckNear(tip.GetTransform().Position.x, 3.0f, 1e-3f, "и второе — за тот же проход");
+}
+
 // --- Экспорт в glTF --------------------------------------------------------
 
 // Экспорт проверяется РАЗБОРОМ ТОГО, ЧТО НАПИСАНО, а не фактом «функция вернула
@@ -1913,6 +2091,7 @@ int RunSelfTest() {
     TestFileDialog();
     TestLocalization();
     TestCameraTrack();
+    TestConstraints();
     TestGltfExport();
     TestClipTracks();
     TestAudioTrackTimeline();

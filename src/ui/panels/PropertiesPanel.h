@@ -24,7 +24,8 @@ private:
                      Property prop, float speed, const char* format, int joint = -1);
     // То же для одного числа (FOV, интенсивность, диафрагма).
     bool DrawFloatRow(DirectorHost& host, const char* label, float* value,
-                      Property prop, float speed, float lo, float hi, const char* format);
+                      Property prop, float speed, float lo, float hi, const char* format,
+                      const char* hint = nullptr);
     // Строка «галочка + ползунок» для пост-обработки, как в референсе.
     bool DrawEffectRow(DirectorHost& host, const char* label, bool* enabled, float* amount,
                        Property prop, float lo, float hi);
@@ -39,6 +40,7 @@ private:
     void DrawMorphSection(DirectorHost& host);
     // Раздел IK внутри секции кости: цель, полюс и длина цепочки.
     void DrawIKSection(DirectorHost& host, int entityId, int joint);
+    void DrawConstraintSection(DirectorHost& host, int entityId);
 
     // Состояние ручки IK. Живёт в панели, а не в сцене: это ИНСТРУМЕНТ, а не
     // свойство персонажа — цель задаётся на время правки позы и снимается

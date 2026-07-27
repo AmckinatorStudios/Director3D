@@ -153,6 +153,10 @@ void DirectorLayer::OnAttach() {
     // Нужна не только для снимков: это самый быстрый способ увидеть готовый
     // ролик с монтажом, клипами и ручной позой, ничего не собирая руками.
     if (std::getenv("D3D_SHOWCASE")) BuildShowcase();
+    // Сцена, показывающая все три ограничения сразу. Как и постановка,
+    // собирается ТЕМИ ЖЕ вызовами, что доступны из интерфейса: если она
+    // работает, работают и правила, поставленные руками.
+    if (std::getenv("D3D_CONSTRAINTS")) BuildConstraintDemo();
     // Звук к постановке — путём в переменной окружения. Нужен и для снимков
     // фонограммы, и чтобы попробовать подгонку монтажа под ритм, не собирая
     // проект руками.
@@ -257,6 +261,107 @@ void DirectorLayer::BuildDefaultScene() {
     m_undo.Clear();  // стартовая сцена — это НЕ правка пользователя
     m_dirty = false;
     SetCurrentTime(0.0f);
+}
+
+// Демонстрация ограничений: камера следит за героем, предмет висит в его руке,
+// третий объект едет по траектории. Всё три правила видны в одном кадре.
+void DirectorLayer::BuildConstraintDemo() {
+    m_doc.ClearContent();
+    m_doc.Name = "Constraints_Demo";
+    m_doc.Fps = 30.0f;
+    m_doc.Duration = 6.0f;
+
+    auto& reg = m_scene->Registry();
+    const int camera = m_activeCameraId;
+
+    // --- Герой: куб, едущий влево-вправо ---
+    const int hero = m_scene->FindByName("Object").Valid() ? m_scene->FindByName("Object").Id() : -1;
+    if (hero >= 0) {
+        GameObject h = m_scene->Get(hero);
+        h.GetTransform().Position = {0.0f, 1.0f, 0.0f};
+        Track& move = m_doc.EnsureTrack(hero, Property::Position);
+        move.Channels[0].SetKey(0.0f, -6.0f, Interp::EaseInOut);
+        move.Channels[0].SetKey(3.0f, 6.0f, Interp::EaseInOut);
+        move.Channels[0].SetKey(6.0f, -6.0f, Interp::EaseInOut);
+        move.Channels[1].SetKey(0.0f, 1.0f, Interp::Linear);
+    }
+
+    // --- Камера СЛЕДИТ за героем ---
+    // Ключей поворота у камеры нет вовсе: весь поворот делает правило. В этом
+    // и проверка — если бы правило не работало, камера смотрела бы в стену.
+    if (camera >= 0 && hero >= 0) {
+        GameObject c = m_scene->Get(camera);
+        c.GetTransform().Position = {0.0f, 3.5f, 11.0f};
+        ConstraintComponent& look = reg.get_or_emplace<ConstraintComponent>(c.Entity());
+        look.Type = ConstraintType::LookAt;
+        look.TargetId = hero;
+        look.Influence = 1.0f;
+    }
+
+    // --- Предмет ПРИВЯЗАН к герою ---
+    const int prop = Create(CreateKind::Sphere);
+    RenameObject(prop, "Held_Prop");
+    if (GameObject p = m_scene->Get(prop); p.Valid() && hero >= 0) {
+        p.GetTransform().Position = {-6.0f, 2.4f, 0.0f}; // над героем в его начальной точке
+        p.GetTransform().Scale = glm::vec3(0.45f);
+        p.Renderer().Color = {0.90f, 0.35f, 0.25f};
+        ConstraintComponent& parent = reg.get_or_emplace<ConstraintComponent>(p.Entity());
+        parent.Type = ConstraintType::Parent;
+        parent.TargetId = hero;
+        parent.KeepOffset = true;
+    }
+
+    // --- Траектория: группа с точками ---
+    //
+    // Группу ставим в начало координат ЯВНО. Create кладёт новый объект перед
+    // камерой вида — это правильно для работы руками (иначе объект появляется
+    // вне кадра), но точки пути читаются в МИРОВЫХ координатах, и вся
+    // траектория уехала бы вместе с группой. Первая версия демонстрации на
+    // этом и попалась: путь оказался сдвинут на позицию группы.
+    //
+    // Само это поведение — не ошибка, а полезное свойство: подвинули группу —
+    // подвинулась вся траектория целиком. Просто здесь нужны точные числа.
+    const int path = Create(CreateKind::Group);
+    RenameObject(path, "Path");
+    if (GameObject g = m_scene->Get(path); g.Valid()) g.GetTransform().Position = glm::vec3(0.0f);
+
+    const glm::vec3 waypoints[] = {{-8.0f, 0.6f, -5.0f}, {-3.0f, 3.2f, -7.0f},
+                                   {3.0f, 3.2f, -7.0f},  {8.0f, 0.6f, -5.0f}};
+    for (int i = 0; i < 4; ++i) {
+        const int wp = Create(CreateKind::Cube);
+        RenameObject(wp, "WP_" + std::to_string(i + 1));
+        SetParentOf(wp, path);
+        if (GameObject w = m_scene->Get(wp); w.Valid()) {
+            // Позицию ставим ПОСЛЕ привязки к родителю: она локальная, и до
+            // привязки означала бы совсем другое место.
+            w.GetTransform().Position = waypoints[i];
+            w.GetTransform().Scale = glm::vec3(0.18f);
+            w.Renderer().Color = {0.95f, 0.72f, 0.30f};
+        }
+    }
+
+    const int rider = Create(CreateKind::Cone);
+    RenameObject(rider, "Rider");
+    if (GameObject r = m_scene->Get(rider); r.Valid()) {
+        r.GetTransform().Scale = glm::vec3(0.6f);
+        r.Renderer().Color = {0.35f, 0.75f, 0.95f};
+        ConstraintComponent& follow = reg.get_or_emplace<ConstraintComponent>(r.Entity());
+        follow.Type = ConstraintType::Path;
+        follow.TargetId = path;
+        follow.FollowTangent = true;
+        // Положение на пути — ключами: без них объект стоял бы в начале.
+        Track& progress = m_doc.EnsureTrack(rider, Property::ConstraintProgress);
+        progress.Channels[0].SetKey(0.0f, 0.0f, Interp::EaseInOut);
+        progress.Channels[0].SetKey(6.0f, 1.0f, Interp::EaseInOut);
+    }
+
+    // Выбран наездник: у него самая содержательная панель — положение на пути,
+    // разворот по ходу и счётчик точек. С него понятнее всего, что тут вообще
+    // происходит.
+    m_selection = {rider};
+    m_undo.Clear();
+    SetCurrentTime(0.0f);
+    LOG_INFO("Director") << "Демонстрация ограничений собрана";
 }
 
 void DirectorLayer::BuildShowcase() {
@@ -518,15 +623,20 @@ void DirectorLayer::BuildShowcase() {
         // Углы посчитаны из геометрии, а не подобраны на глаз: камера в
         // (-4.2, 2.4, -3.4) смотрит на персонажа у начала координат.
         //
-        // ЗНАК ТАНГАЖА. Transform::GetMatrix крутит X, потом Y, потом Z, а
-        // направление взгляда — это (0,0,-1) через эту матрицу. При
-        // ПОЛОЖИТЕЛЬНОМ угле X y-компонента направления становится
-        // ОТРИЦАТЕЛЬНОЙ, то есть камера смотрит ВНИЗ. Привычное
-        // «pitch = atan2(dy, расстояние)» даёт здесь противоположный знак, и
-        // подстановка его напрямую задирает камеру в небо ровно на столько,
-        // на сколько собирался наклонить, — что и произошло. Правильно так:
-        //     yaw   = atan2(-dx, -dz) = -129°
-        //     pitch = -asin(dy / |d|) = +17.5°
+        // ЗНАК ТАНГАЖА ЗДЕСЬ ПОЛОЖИТЕЛЬНЫЙ, И ЭТО НЕ ОБЩЕЕ ПРАВИЛО.
+        //
+        // Transform::GetMatrix собирает M = Rx * Ry * Rz, то есть тангаж
+        // крутит вокруг МИРОВОЙ оси X и применяется ДО рыскания. Из-за этого
+        // видимый эффект тангажа зависит от рыскания: при рыскании 0 угол
+        // +17° поднимает взгляд, при -129° — опускает, при 180° снова
+        // опускает. Я сначала записал здесь «положительный X всегда вниз» —
+        // это было наблюдение для ЭТОЙ камеры, ошибочно принятое за правило.
+        //
+        // Надёжный способ один: считать углы из нужного направления, а не
+        // подставлять привычную формулу. Ровно это делает LookRotation в
+        // anim/Constraints.cpp, и ограничение «смотреть на объект» избавляет
+        // от ручного счёта совсем. Здесь числа оставлены явными, потому что
+        // камера показа не должна зависеть от наличия ограничений.
         c.GetTransform().Position = {-4.2f, 2.4f, -3.4f};
         c.GetTransform().Rotation = {17.5f, -129.0f, 0.0f};
         if (CameraComponent* cam = m_scene->Registry().try_get<CameraComponent>(c.Entity())) {

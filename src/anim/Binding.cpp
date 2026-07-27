@@ -38,6 +38,8 @@ const std::vector<PropertyInfo> kTable = {
     {Property::PostMotionBlur,      "postMotionBlur", "Смаз движения",     1, {"", "", ""},    {kScalar, 0, 0},          false},
     {Property::PostChromatic,       "postChromatic",  "Хром. аберрация",   1, {"", "", ""},    {kScalar, 0, 0},          false},
     {Property::Visibility,          "visibility",     "Видимость",      1, {"", "", ""},    {kScalar, 0, 0},          true},
+    {Property::ConstraintInfluence, "constraintInfluence", "Сила ограничения", 1, {"", "", ""}, {kScalar, 0, 0}, false},
+    {Property::ConstraintProgress,  "constraintProgress",  "Путь: положение",  1, {"", "", ""}, {kScalar, 0, 0}, false},
     {Property::BonePosition,        "bonePosition",   "Кость: положение",   3, {"X", "Y", "Z"}, {kAxisX, kAxisY, kAxisZ}, false},
     {Property::BoneRotation,        "boneRotation",   "Кость: поворот",   3, {"X", "Y", "Z"}, {kAxisX, kAxisY, kAxisZ}, false},
     {Property::BoneScale,           "boneScale",      "Кость: масштаб",      3, {"X", "Y", "Z"}, {kAxisX, kAxisY, kAxisZ}, false},
@@ -125,6 +127,12 @@ bool PropertyApplies(Scene& scene, int entityId, Property prop, int joint) {
             return reg.all_of<CameraComponent>(e);
         case Property::Visibility:
             return true; // спрятать можно что угодно
+        case Property::ConstraintInfluence:
+        case Property::ConstraintProgress:
+            // Только там, где ограничение УЖЕ заведено: дорожка силы у объекта
+            // без ограничения ничего не делает, и предлагать её в меню значило
+            // бы обещать несуществующее.
+            return reg.all_of<ConstraintComponent>(e);
         case Property::BonePosition:
         case Property::BoneRotation:
         case Property::BoneScale:
@@ -216,6 +224,18 @@ bool ReadProperty(Scene& scene, int entityId, Property prop, float* values, int 
             values[0] = (!item || item->Visible) ? 1.0f : 0.0f;
             return true;
         }
+        case Property::ConstraintInfluence: {
+            const ConstraintComponent* c = reg.try_get<ConstraintComponent>(e);
+            if (!c) return false;
+            values[0] = c->Influence;
+            return true;
+        }
+        case Property::ConstraintProgress: {
+            const ConstraintComponent* c = reg.try_get<ConstraintComponent>(e);
+            if (!c) return false;
+            values[0] = c->Progress;
+            return true;
+        }
     }
     return false;
 }
@@ -296,6 +316,18 @@ bool WriteProperty(Scene& scene, int entityId, Property prop, const float* value
                 case Property::PostMotionBlur:      c.MotionBlurAmount = glm::clamp(values[0], 0.0f, 1.0f); break;
                 default:                            c.ChromaticAmount = glm::clamp(values[0], 0.0f, 1.0f); break;
             }
+            return true;
+        }
+        case Property::ConstraintInfluence: {
+            ConstraintComponent* c = reg.try_get<ConstraintComponent>(e);
+            if (!c) return false;
+            c->Influence = values[0];
+            return true;
+        }
+        case Property::ConstraintProgress: {
+            ConstraintComponent* c = reg.try_get<ConstraintComponent>(e);
+            if (!c) return false;
+            c->Progress = values[0];
             return true;
         }
         case Property::Visibility: {
