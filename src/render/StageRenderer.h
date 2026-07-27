@@ -9,6 +9,7 @@
 #include "sage/render/Camera.h"
 #include "sage/render/DebugDraw.h"
 #include "sage/render/Framebuffer.h"
+#include "sage/render/FrameGraph.h"
 #include "sage/render/GridRenderer.h"
 #include "sage/render/ParticleSystem.h"
 #include "sage/render/PostFX.h"
@@ -193,6 +194,11 @@ private:
                    const FrameDesc& desc, std::optional<sage::render::PostFX>& fx);
 
     Framebuffer& RenderFrame(Scene& scene, const LightingEnvironment& env, const FrameDesc& desc);
+
+    // Граф кадра. Переиспользуется между кадрами: Reset чистит содержимое, не
+    // освобождая память, — состав кадра каждый кадр примерно одинаков.
+    sage::render::FrameGraph m_frameGraph;
+    bool m_frameGraphDumped = false;
 
     void DrawScene(Scene& scene, const LightingEnvironment& env, const glm::mat4& view,
                    const glm::mat4& proj, const glm::vec3& viewPos, ShadingMode shading);

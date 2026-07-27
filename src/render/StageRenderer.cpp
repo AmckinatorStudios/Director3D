@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 
 #include <glm/gtc/matrix_transform.hpp>
 #define GLM_ENABLE_EXPERIMENTAL
@@ -11,6 +12,7 @@
 #include "sage/anim/AnimationSystem.h"
 #include "sage/core/Application.h"
 #include "sage/core/Config.h"
+#include "sage/core/Log.h"
 #include "sage/core/Profiler.h"
 #include "sage/ecs/CameraView.h"
 #include "sage/ecs/LightSystem.h"
@@ -533,98 +535,215 @@ void StageRenderer::RenderStage(Scene& scene, Camera& camera, const LightingEnvi
 //  Кадр
 // ============================================================================
 
-// ЕДИНСТВЕННОЕ место, где записан порядок проходов. Всё, что рисует
-// инструмент — рабочий вьюпорт, Render View, кадр экспорта, — проходит здесь;
-// отличаются они только описанием (FrameDesc), а не своей копией
-// последовательности.
+// ЕДИНСТВЕННОЕ место, где ОБЪЯВЛЯЕТСЯ состав кадра. Порядок здесь не задан:
+// он выводится графом из того, кто что читает и во что пишет (см.
+// sage/render/FrameGraph.h).
+//
+// Раньше порядок был зашит в тело этой функции, а зависимости между проходами
+// существовали только в голове у автора. Сейчас каждый проход объявляет свои
+// входы и выходы, и три вещи становятся возможны без правки кода:
+//   • проход, результат которого никому не нужен, не выполняется вовсе;
+//   • перестановка проходов местами в объявлении ничего не ломает;
+//   • на вопрос «почему прохода нет в кадре» отвечает Describe(), а не чтение
+//     этой функции глазами.
 Framebuffer& StageRenderer::RenderFrame(Scene& scene, const LightingEnvironment& env,
                                         const FrameDesc& d) {
+    using sage::render::LoadOp;
+    using sage::render::RenderPassDesc;
+    using sage::render::ResourceId;
+
     sage::rhi::GraphicsDevice& device = sage::Application::Get().Device();
     HiddenObjects hidden(scene); // погашенное глазком не рисуется и не светит
 
-    // --- Проход 1: очистка и небо ---
+    m_frameGraph.Reset();
+    const ResourceId hdr = m_frameGraph.DeclareResource("HDR-буфер сцены");
+    const ResourceId resolved = m_frameGraph.DeclareResource("HDR после разрешения MSAA");
+    const ResourceId velocity = m_frameGraph.DeclareResource("Буфер скоростей");
+    const ResourceId posted = m_frameGraph.DeclareResource("Кадр после пост-обработки");
+    const ResourceId final = m_frameGraph.DeclareResource("Готовый кадр");
+
+    // Куда попадёт результат: с пост-обработкой — в Output, без неё — в Hdr.
+    const bool usePost = d.Fx && d.Output;
+    Framebuffer* result = usePost ? d.Output : d.Hdr;
+    unsigned int velocityTexture = 0;
+
+    auto add = [&](RenderPassDesc pass) { m_frameGraph.AddPass(std::move(pass)); };
+
+    // --- Небо и очистка ---
     {
-        SAGE_PROFILE("Небо");
-        d.Hdr->Bind();
-        device.SetClearColor(d.ClearColor.r, d.ClearColor.g, d.ClearColor.b, d.ClearColor.a);
-        device.Clear();
-        if (d.Sky) DrawSky(env, d.View, d.Proj);
+        RenderPassDesc p;
+        p.Name = "Небо";
+        p.Writes = {hdr};
+        // Очистка объявлена как свойство прохода, а не как отдельный вызов
+        // посреди тела. Это ровно та информация, которую у Vulkan требует
+        // описание прохода, и получить её из «где-то вызвали Clear» нельзя.
+        p.ColorLoad = LoadOp::Clear;
+        p.DepthLoad = LoadOp::Clear;
+        p.ClearColor = d.ClearColor;
+        p.Execute = [this, &env, &d, &device] {
+            SAGE_PROFILE("Небо");
+            d.Hdr->Bind();
+            device.SetClearColor(d.ClearColor.r, d.ClearColor.g, d.ClearColor.b, d.ClearColor.a);
+            device.Clear();
+            if (d.Sky) DrawSky(env, d.View, d.Proj);
+        };
+        add(std::move(p));
     }
 
-    // --- Проход 2: геометрия (батч + скелетные модели + частицы) ---
+    // --- Геометрия ---
     {
-        SAGE_PROFILE("Геометрия");
-        DrawScene(scene, env, d.View, d.Proj, d.ViewPos, d.Shading);
+        RenderPassDesc p;
+        p.Name = "Геометрия";
+        p.Reads = {hdr};   // дорисовывает поверх неба
+        p.Writes = {hdr};
+        p.Execute = [this, &scene, &env, &d] {
+            SAGE_PROFILE("Геометрия");
+            DrawScene(scene, env, d.View, d.Proj, d.ViewPos, d.Shading);
+        };
+        add(std::move(p));
     }
 
-    // --- Проход 3: сетка ---
+    // --- Сетка ---
     // После геометрии и ДО служебной графики: она полупрозрачна и должна
     // смешиваться с уже нарисованной сценой, а каркасы камер и светов должны
-    // ложиться поверх неё.
-    if (d.Grid) {
-        SAGE_PROFILE("Сетка");
-        sage::render::GridSettings grid = *d.Grid;
-        grid.Enabled = true;
-        m_grid.Draw(d.View, d.Proj, d.ViewPos, grid);
-    }
-
-    // --- Проход 4: служебная графика вьюпорта ---
-    // В тот же буфер и с тестом глубины, чтобы объекты корректно её заслоняли.
-    if (d.Helpers) {
-        SAGE_PROFILE("Служебная графика");
-        DrawHelpers(scene, *d.Helpers, d.Outline ? *d.Outline : std::vector<int>{},
-                    d.HelperAspect);
-        m_debug->Flush(d.View, d.Proj);
-    }
-
-    // Многосэмпловое содержимое переносится в обычные текстуры. Строго ЗДЕСЬ:
-    // вся геометрия и служебная графика уже нарисованы, а всё, что дальше,
-    // читает буфер как текстуру — а многосэмпловую обычный sampler2D не берёт.
+    // ложиться поверх неё. Это выражено зависимостями, а не позицией в коде.
     {
-        SAGE_PROFILE("Разрешение MSAA");
-        d.Hdr->Resolve();
+        RenderPassDesc p;
+        p.Name = "Сетка";
+        p.Reads = {hdr};
+        p.Writes = {hdr};
+        p.Enabled = d.Grid != nullptr;
+        p.Execute = [this, &d] {
+            SAGE_PROFILE("Сетка");
+            sage::render::GridSettings grid = *d.Grid;
+            grid.Enabled = true;
+            m_grid.Draw(d.View, d.Proj, d.ViewPos, grid);
+        };
+        add(std::move(p));
     }
 
-    // --- Проход 5: скорости ---
+    // --- Служебная графика вьюпорта ---
+    {
+        RenderPassDesc p;
+        p.Name = "Служебная графика";
+        p.Reads = {hdr};
+        p.Writes = {hdr};
+        p.Enabled = d.Helpers != nullptr;
+        p.Execute = [this, &scene, &d] {
+            SAGE_PROFILE("Служебная графика");
+            DrawHelpers(scene, *d.Helpers, d.Outline ? *d.Outline : std::vector<int>{},
+                        d.HelperAspect);
+            m_debug->Flush(d.View, d.Proj);
+        };
+        add(std::move(p));
+    }
+
+    // --- Разрешение MSAA ---
+    // Многосэмпловое содержимое переносится в обычные текстуры. Всё, что
+    // дальше, читает буфер как текстуру, а многосэмпловую обычный sampler2D не
+    // берёт — поэтому «resolved» это отдельный ресурс, а не тот же самый.
+    {
+        RenderPassDesc p;
+        p.Name = "Разрешение MSAA";
+        p.Reads = {hdr};
+        p.Writes = {resolved};
+        p.Execute = [&d] {
+            SAGE_PROFILE("Разрешение MSAA");
+            d.Hdr->Resolve();
+        };
+        add(std::move(p));
+    }
+
+    // --- Скорости ---
     // Отдельный проход геометрии, пишущий экранное смещение каждого пикселя за
-    // кадр. Нужен только смазу движения, поэтому и рисуется только когда смаз
-    // включён: лишний проход по всей видимой геометрии стоит заметно.
-    unsigned int velocityTexture = 0;
-    if (d.Velocity && d.PrevViewProj && d.FxSettings.MotionBlurEnabled &&
-        d.FxSettings.MotionBlurAmount > 0.0f) {
-        SAGE_PROFILE("Скорости");
-        if (!m_velocityFbo || m_velocityFbo->Width() != d.Hdr->Width() ||
-            m_velocityFbo->Height() != d.Hdr->Height()) {
-            m_velocityFbo.emplace(d.Hdr->Width(), d.Hdr->Height());
-        }
-        m_velocityFbo->Bind();
-        // Чёрный — нулевая скорость: там, где геометрии нет (небо), смазывать
-        // нечего, и фон не должен тянуться за движущимся объектом.
-        device.SetClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-        device.Clear();
-        m_batch.RenderVelocity(d.Proj * d.View, *d.PrevViewProj);
-        velocityTexture = m_velocityFbo->ColorTexture();
+    // кадр. Нужен только смазу движения — и вот это теперь выражено графом: не
+    // читает буфер скоростей никто, значит проход не выполняется, и проверять
+    // условие в двух местах не нужно.
+    const bool wantVelocity = d.Velocity && d.PrevViewProj && d.FxSettings.MotionBlurEnabled &&
+                              d.FxSettings.MotionBlurAmount > 0.0f;
+    {
+        RenderPassDesc p;
+        p.Name = "Скорости";
+        p.Writes = {velocity};
+        p.ColorLoad = LoadOp::Clear;
+        p.ClearColor = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
+        p.Enabled = wantVelocity;
+        p.Execute = [this, &d, &device, &velocityTexture] {
+            SAGE_PROFILE("Скорости");
+            if (!m_velocityFbo || m_velocityFbo->Width() != d.Hdr->Width() ||
+                m_velocityFbo->Height() != d.Hdr->Height()) {
+                m_velocityFbo.emplace(d.Hdr->Width(), d.Hdr->Height());
+            }
+            m_velocityFbo->Bind();
+            // Чёрный — нулевая скорость: там, где геометрии нет (небо),
+            // смазывать нечего, и фон не должен тянуться за движущимся объектом.
+            device.SetClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+            device.Clear();
+            m_batch.RenderVelocity(d.Proj * d.View, *d.PrevViewProj);
+            velocityTexture = m_velocityFbo->ColorTexture();
+        };
+        add(std::move(p));
     }
-    if (d.PrevViewProj) *d.PrevViewProj = d.Proj * d.View;
 
-    // --- Проход 6: пост-обработка ---
-    Framebuffer* result = d.Hdr;
-    if (d.Fx && d.Output) {
-        SAGE_PROFILE("Пост-обработка");
-        d.Fx->Render(d.Hdr->ColorTexture(), d.Hdr->DepthTexture(), d.Hdr->Width(), d.Hdr->Height(),
-                     d.Proj, d.View, d.FxSettings, d.Output, 0, 0, d.Output->Width(),
-                     d.Output->Height(), velocityTexture);
-        result = d.Output;
+    // --- Пост-обработка ---
+    {
+        RenderPassDesc p;
+        p.Name = "Пост-обработка";
+        p.Reads = {resolved};
+        if (wantVelocity) p.Reads.push_back(velocity);
+        p.Writes = {posted};
+        p.Enabled = usePost;
+        p.Execute = [&d, &velocityTexture] {
+            SAGE_PROFILE("Пост-обработка");
+            d.Fx->Render(d.Hdr->ColorTexture(), d.Hdr->DepthTexture(), d.Hdr->Width(),
+                         d.Hdr->Height(), d.Proj, d.View, d.FxSettings, d.Output, 0, 0,
+                         d.Output->Width(), d.Output->Height(), velocityTexture);
+        };
+        add(std::move(p));
     }
 
-    // --- Проход 7: подсветка выделения ---
+    // --- Подсветка выделения ---
     // Строго последней и поверх результата пост-обработки: обводка — это
     // указание инструмента, а не часть изображения, и тон-маппинг её съел бы.
-    if (d.Outline && !d.Outline->empty()) {
-        SAGE_PROFILE("Обводка");
-        RenderOutline(scene, *d.Outline, d.View, d.Proj, *result);
+    {
+        RenderPassDesc p;
+        p.Name = "Обводка";
+        p.Reads = {usePost ? posted : resolved};
+        p.Writes = {final};
+        p.Enabled = d.Outline && !d.Outline->empty();
+        p.Execute = [this, &scene, &d, result] {
+            SAGE_PROFILE("Обводка");
+            RenderOutline(scene, *d.Outline, d.View, d.Proj, *result);
+        };
+        add(std::move(p));
     }
 
+    // Выход кадра — это тот ресурс, в который пишет ПОСЛЕДНИЙ включённый
+    // проход. Отдельного прохода-пустышки для него нет: он бы стал последним
+    // писателем «готового кадра», и обводка оказалась бы отброшена как никому
+    // не нужная — граф сработал бы правильно, а кадр вышел бы без обводки.
+    const ResourceId frameOutput = (d.Outline && !d.Outline->empty())
+                                       ? final
+                                       : (usePost ? posted : resolved);
+
+    std::string error;
+    if (!m_frameGraph.Compile(frameOutput, error)) {
+        // Ошибка описания кадра — это ошибка программиста, и молчать о ней
+        // нельзя: молча получится чёрный экран без единой подсказки.
+        LOG_ERROR("Кадр") << "граф кадра не собрался: " << error;
+        device.BindDefaultFramebuffer();
+        return *result;
+    }
+    // Описание кадра в лог — по требованию и ОДИН раз. Отвечает на вопрос
+    // «почему этого прохода нет в кадре», на который иначе отвечать нечем:
+    // раньше пришлось бы читать тело функции и держать в голове все условия.
+    if (!m_frameGraphDumped && std::getenv("D3D_FRAME_GRAPH")) {
+        m_frameGraphDumped = true;
+        LOG_INFO("Кадр") << "\n" << m_frameGraph.Describe();
+    }
+    m_frameGraph.Execute();
+
+    if (d.PrevViewProj) *d.PrevViewProj = d.Proj * d.View;
     device.BindDefaultFramebuffer();
     return *result;
 }
