@@ -9,9 +9,13 @@ namespace d3d {
 // настройки рендера и таймлайна, справка. Панель владеет их состоянием
 // (введённые пути, выбранные параметры) и открывается через host.OpenDialog.
 //
-// Файловые диалоги — свои, а не системные: системный требует платформенной
-// библиотеки на каждой ОС, а инструменту достаточно поля пути с проверкой
-// существования и подсказкой о том, что не так.
+// Путь всегда можно ввести строкой, а рядом стоит кнопка «Обзор…», открывающая
+// НАСТОЯЩИЙ системный диалог (ui/FileDialog). Поле с проверкой существования
+// остаётся основой: оно работает даже там, где системного диалога нет, и
+// показывает проблему до нажатия кнопки, а не в виде ошибки после.
+//
+// Здесь же живут два окна, которые открывает не человек, а ход дела: прогресс
+// идущего рендера и его итог.
 class DialogsPanel {
 public:
     void Draw(DirectorHost& host);
@@ -19,6 +23,11 @@ public:
     bool AnyOpen() const { return m_active != Dialog::None; }
 
 private:
+    // Ход рендера и его итог — не из перечисления Dialog: их открывает не
+    // человек, а состояние экспортёра, и закрывать их по Esc нельзя.
+    void DrawRenderProgress(DirectorHost& host);
+    void DrawRenderOutcome(DirectorHost& host);
+
     void DrawNewProject(DirectorHost& host);
     void DrawOpenProject(DirectorHost& host);
     void DrawSaveProjectAs(DirectorHost& host);
@@ -42,6 +51,11 @@ private:
     char m_path[512] = "";
     char m_renderDir[512] = "render";
     char m_renderName[96] = "frame";
+    // Модалка прогресса открывается один раз на рендер: OpenPopup можно звать
+    // только когда попапа ещё нет, иначе ImGui каждый кадр сбрасывает его
+    // состояние.
+    bool m_progressOpen = false;
+    bool m_outcomeOpen = false;
 };
 
 } // namespace d3d

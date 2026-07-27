@@ -127,6 +127,14 @@ target_link_libraries(Director3D PRIVATE
     nlohmann_json::nlohmann_json # файлы проекта .d3dproj
 )
 
+# Родные диалоги выбора файлов на Windows (src/ui/FileDialog.cpp): comdlg32 —
+# «открыть/сохранить», shell32 и ole32 — выбор каталога и показ результата в
+# проводнике. Раньше диалоги открывались запуском PowerShell, и в оконной
+# программе это намертво вешало инструмент.
+if(WIN32)
+    target_link_libraries(Director3D PRIVATE comdlg32 shell32 ole32)
+endif()
+
 # Ассеты инструмента (шрифт интерфейса) — рядом с бинарником, чтобы Director 3D
 # запускался из каталога сборки без дополнительных шагов.
 add_custom_command(TARGET Director3D POST_BUILD

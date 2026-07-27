@@ -113,6 +113,29 @@ bool PathExists(const char* buffer) {
     return buffer[0] != '\0' && fs::exists(fs::path(buffer), ec);
 }
 
+// Длительность по-человечески: «45 с», «3 мин 20 с», «1 ч 05 мин». Секунды
+// числом («осталось 212 секунд») читатель всё равно переводит в минуты в уме —
+// пусть это делает программа.
+std::string HumanDuration(float seconds) {
+    if (seconds < 0.0f) return "—";
+    const int total = (int)(seconds + 0.5f);
+    char out[64];
+    if (total < 60) {
+        std::snprintf(out, sizeof(out), T("%d с"), total);
+    } else if (total < 3600) {
+        std::snprintf(out, sizeof(out), T("%d мин %02d с"), total / 60, total % 60);
+    } else {
+        std::snprintf(out, sizeof(out), T("%d ч %02d мин"), total / 3600, (total % 3600) / 60);
+    }
+    return out;
+}
+
+// Заголовок окна с постоянным идентификатором: видимая часть переводится, а
+// «###id» держит ImGui-состояние окна на месте при смене языка.
+std::string TitleWithId(const char* text, const char* id) {
+    return std::string(T(text)) + "###" + id;
+}
+
 } // namespace
 
 void DialogsPanel::Open(Dialog dialog) {
@@ -162,6 +185,150 @@ void DialogsPanel::Draw(DirectorHost& host) {
         case Dialog::Shortcuts:        DrawShortcuts(host); break;
         default: break;
     }
+
+    // Эти два окна открывает ход дела, а не человек, поэтому они вне switch и
+    // рисуются всегда. Порядок важен: прогресс должен успеть закрыться прежде,
+    // чем откроется итог.
+    DrawRenderProgress(host);
+    DrawRenderOutcome(host);
+}
+
+// ============================================================================
+//  Ход рендера
+// ============================================================================
+
+void DialogsPanel::DrawRenderProgress(DirectorHost& host) {
+    SequenceExporter& exporter = host.Exporter();
+    const std::string title = TitleWithId("Идёт рендер", "d3d_render_progress");
+
+    if (exporter.Active() && !m_progressOpen) {
+        m_progressOpen = true;
+        ImGui::OpenPopup(title.c_str());
+    }
+    if (!m_progressOpen) return;
+
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(470.0f, 0.0f), ImGuiCond_Appearing);
+    if (!ImGui::BeginPopupModal(title.c_str(), nullptr,
+                                ImGuiWindowFlags_AlwaysAutoResize |
+                                    ImGuiWindowFlags_NoSavedSettings)) {
+        m_progressOpen = false; // окно закрылось само — состояние надо вернуть
+        return;
+    }
+
+    // Рендер кончился, пока окно было открыто: закрываем и уступаем место итогу.
+    if (!exporter.Active()) {
+        m_progressOpen = false;
+        ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+        return;
+    }
+
+    const int current = exporter.CurrentFrame();
+    const int total = exporter.TotalFrames();
+
+    char overlay[64];
+    std::snprintf(overlay, sizeof(overlay), "%.0f%%", (double)(exporter.Progress() * 100.0f));
+    ImGui::ProgressBar(exporter.Progress(), ImVec2(-1.0f, 22.0f), overlay);
+
+    ImGui::Spacing();
+    ImGui::Text(T("Кадр %d из %d"), current, total);
+
+    // Прошедшее время — всегда, оставшееся — как только его есть из чего
+    // посчитать. Пока оценки нет, честно пишем «считаю»: пустое место на этой
+    // строке человек читает как «программа не отвечает».
+    const float remaining = exporter.RemainingSeconds();
+    ImGui::TextDisabled(T("Прошло: %s     Осталось: %s"), HumanDuration(exporter.ElapsedSeconds()).c_str(),
+                        remaining < 0.0f ? T("считаю…") : HumanDuration(remaining).c_str());
+
+    ImGui::Spacing();
+    ImGui::TextDisabled("%s", T("Пишется в:"));
+    ImGui::TextWrapped("%s", exporter.ResultPath().c_str());
+
+    ImGui::Spacing();
+    ImGui::TextDisabled("%s", T("Пока идёт рендер, сцена стоит на снимаемом кадре — это нормально."));
+
+    ImGui::Separator();
+    if (ImGui::Button(T("Отменить рендер"), ImVec2(170.0f, 0.0f))) {
+        host.CancelRender();
+        m_progressOpen = false;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+
+// ============================================================================
+//  Итог рендера
+// ============================================================================
+
+void DialogsPanel::DrawRenderOutcome(DirectorHost& host) {
+    RenderOutcome& outcome = host.LastRender();
+    const std::string title = TitleWithId("Рендер", "d3d_render_outcome");
+
+    // Ждём, пока закроется всё остальное: открывать модалку поверх модалки
+    // прогресса, которая закрывается в этом же кадре, — верный способ получить
+    // окно, которое нельзя закрыть.
+    const bool anyPopup = ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId |
+                                                          ImGuiPopupFlags_AnyPopupLevel);
+    if (outcome.Shown && !m_outcomeOpen && !anyPopup) {
+        m_outcomeOpen = true;
+        ImGui::OpenPopup(title.c_str());
+    }
+    if (!m_outcomeOpen) return;
+
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(470.0f, 0.0f), ImGuiCond_Appearing);
+    if (!ImGui::BeginPopupModal(title.c_str(), nullptr,
+                                ImGuiWindowFlags_AlwaysAutoResize |
+                                    ImGuiWindowFlags_NoSavedSettings)) {
+        m_outcomeOpen = false;
+        outcome.Shown = false;
+        return;
+    }
+
+    if (outcome.Ok) {
+        ImGui::PushStyleColor(ImGuiCol_Text, Theme::Colors::Good);
+        ImGui::TextUnformatted(T("Готово."));
+        ImGui::PopStyleColor();
+        ImGui::Spacing();
+        ImGui::Text(T("Кадров: %d     Времени: %s"), outcome.Frames,
+                    HumanDuration(outcome.Seconds).c_str());
+    } else {
+        ImGui::PushStyleColor(ImGuiCol_Text, Theme::Colors::Record);
+        ImGui::TextUnformatted(T("Рендер не завершён."));
+        ImGui::PopStyleColor();
+        ImGui::Spacing();
+        ImGui::TextWrapped("%s", outcome.Message.c_str());
+    }
+
+    if (!outcome.Path.empty()) {
+        ImGui::Spacing();
+        ImGui::TextDisabled("%s", T("Результат:"));
+        ImGui::TextWrapped("%s", outcome.Path.c_str());
+    }
+
+    ImGui::Separator();
+
+    // «Открыть папку» есть только если результат существует: предлагать открыть
+    // то, чего нет, — обещание, которое кнопка не выполнит.
+    std::error_code ec;
+    const bool exists = !outcome.Path.empty() && fs::exists(fs::path(outcome.Path), ec);
+    ImGui::BeginDisabled(!exists);
+    if (ImGui::Button(T("Открыть папку"), ImVec2(150.0f, 0.0f))) {
+        if (!filedialog::RevealInFileManager(outcome.Path)) {
+            host.SetStatus(T("Не удалось открыть проводник — путь показан выше"));
+        }
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button(T("Закрыть"), ImVec2(120.0f, 0.0f))) {
+        m_outcomeOpen = false;
+        outcome.Shown = false;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
 }
 
 void DialogsPanel::DrawNewProject(DirectorHost& host) {
@@ -507,8 +674,39 @@ void DialogsPanel::DrawRenderSettings(DirectorHost& host) {
     ImGui::Spacing();
     std::snprintf(m_renderDir, sizeof(m_renderDir), "%s", settings.OutputDir.c_str());
     ImGui::TextUnformatted(T("Каталог вывода"));
-    ImGui::SetNextItemWidth(-1.0f);
+
+    // Кнопка выбора каталога — обязательная часть, а не украшение. Раньше здесь
+    // было только поле ввода: чтобы положить ролик в нужное место, приходилось
+    // знать полный путь наизусть и набирать его руками, с обратными слэшами и
+    // кириллицей в имени пользователя. Именно на этом шаге рендер и упирался.
+    const bool browsable = filedialog::Available();
+    const float browseWidth = browsable ? 90.0f : 0.0f;
+    ImGui::SetNextItemWidth(browsable ? -(browseWidth + ImGui::GetStyle().ItemSpacing.x) : -1.0f);
     if (ImGui::InputText("##outdir", m_renderDir, sizeof(m_renderDir))) settings.OutputDir = m_renderDir;
+    if (browsable) {
+        ImGui::SameLine();
+        if (ImGui::Button(T("Обзор…"), ImVec2(browseWidth, 0.0f))) {
+            std::string picked;
+            if (filedialog::PickFolder(T("Куда сохранять рендер"), settings.OutputDir, picked)) {
+                settings.OutputDir = picked;
+                std::snprintf(m_renderDir, sizeof(m_renderDir), "%s", picked.c_str());
+            }
+        }
+    }
+
+    // Показываем ПОЛНЫЙ путь: относительный («render») человек читает как
+    // «где-то рядом», и после рендера начинается поиск файла по диску.
+    {
+        std::error_code ec;
+        const fs::path dir(settings.OutputDir);
+        const fs::path full = dir.is_absolute() ? dir : fs::absolute(dir, ec);
+        if (!ec && full != dir) ImGui::TextDisabled("%s", full.string().c_str());
+        if (fs::exists(full, ec)) {
+            ImGui::TextDisabled("%s", T("Каталог существует — файлы лягут в него."));
+        } else {
+            ImGui::TextDisabled("%s", T("Каталога ещё нет — будет создан при рендере."));
+        }
+    }
 
     std::snprintf(m_renderName, sizeof(m_renderName), "%s", settings.BaseName.c_str());
     ImGui::TextUnformatted(mp4 ? T("Имя ролика") : T("Имя файлов"));

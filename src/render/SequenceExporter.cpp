@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 
@@ -18,6 +19,16 @@
 namespace fs = std::filesystem;
 
 namespace d3d {
+
+std::string DefaultRenderDir() {
+    // USERPROFILE — домашняя папка на Windows, HOME — на остальных системах.
+    // Если нет ни того ни другого (служба, урезанное окружение), остаётся
+    // относительный путь: он хуже, но пусть будет хоть что-то работающее.
+    const char* home = std::getenv("USERPROFILE");
+    if (!home || !*home) home = std::getenv("HOME");
+    if (!home || !*home) return "render";
+    return (fs::path(home) / "Director3D" / "render").string();
+}
 
 bool SequenceExporter::Begin(const Settings& settings, const AnimationDocument& doc,
                              Scene& scene, std::string& err) {
@@ -76,9 +87,25 @@ bool SequenceExporter::Begin(const Settings& settings, const AnimationDocument& 
     }
 
     m_active = true;
+    m_startedAt = std::chrono::steady_clock::now();
     LOG_INFO("Export") << "Экспорт: " << m_total << " кадр(ов) " << m_settings.Width << "x"
                        << m_settings.Height << " -> " << m_resultPath;
     return true;
+}
+
+float SequenceExporter::ElapsedSeconds() const {
+    if (m_startedAt.time_since_epoch().count() == 0) return 0.0f;
+    const auto now = std::chrono::steady_clock::now();
+    return std::chrono::duration<float>(now - m_startedAt).count();
+}
+
+float SequenceExporter::RemainingSeconds() const {
+    // Меньше двух кадров — оценивать не по чему: первый кадр всегда дороже
+    // остальных (создаётся буфер рендера, прогреваются шейдеры), и прогноз по
+    // нему одному завышен в разы.
+    if (m_current < 2 || m_total <= 0) return -1.0f;
+    const float perFrame = ElapsedSeconds() / (float)m_current;
+    return perFrame * (float)(m_total - m_current);
 }
 
 bool SequenceExporter::Step(Scene& scene, StageRenderer& renderer, AnimationDocument& doc) {

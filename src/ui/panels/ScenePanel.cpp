@@ -4,6 +4,7 @@
 #include <cstring>
 
 #include "imgui.h"
+#include "imgui_internal.h" // ImGui::GetCurrentWindow — нужен признак полосы прокрутки
 #include "imgui_stdlib.h"
 
 #include "anim/BonePose.h"
@@ -48,6 +49,35 @@ const char* ScenePanel::CategoryName(Category c) {
 }
 
 namespace {
+
+// Ширина колонки глазка справа: сама иконка плюс воздух по бокам.
+constexpr float kEyeSize = 16.0f;
+constexpr float kEyeColumn = kEyeSize + 10.0f;
+// Зазор между обрезанным именем и глазком. Без него длинное имя обрывается
+// вплотную к иконке, и обрывок читается как часть иконки.
+constexpr float kLabelGap = 6.0f;
+
+// Отступ в начале подписи узла, освобождающий место под иконку типа объекта.
+// Пробелами, потому что у ImGui нет «иконки в TreeNode»; ширину этого места
+// каждый раз МЕРЯЕМ по текущему шрифту, а не считаем известным числом.
+constexpr const char* kIconPad = "      ";
+
+// Кнопки «добавить» и «удалить» в строке поиска.
+constexpr float kSearchButtonSize = 24.0f;
+
+// X правого края ВИДИМОЙ области дерева, в координатах окна.
+//
+// Не GetWindowContentRegionMax(): она возвращает край СОДЕРЖИМОГО, а он в
+// прокручиваемом окне равен ширине самой длинной строки. Глазки, посаженные от
+// него, разъезжались по горизонтали тем сильнее, чем длиннее было имя объекта
+// в дереве, и у вложенных объектов уходили за правый край панели совсем. Ровный
+// столбец получается только от края окна.
+float VisibleRightEdge() {
+    const float scrollbar = ImGui::GetCurrentWindow()->ScrollbarY ? ImGui::GetStyle().ScrollbarSize
+                                                                  : 0.0f;
+    return ImGui::GetScrollX() + ImGui::GetWindowWidth() - scrollbar -
+           ImGui::GetStyle().WindowPadding.x;
+}
 
 Icon IconForEntity(Scene& scene, entt::entity e) {
     auto& reg = scene.Registry();
@@ -208,8 +238,12 @@ void ScenePanel::DrawEntity(DirectorHost& host, Scene& scene, entt::entity e, bo
     const bool hasChildren = (h && !h->Children.empty()) || hasSkeleton;
 
     ImGui::PushID(id);
+    // AllowOverlap — чтобы глазок в правой колонке принимал нажатия. Строка
+    // растянута на всю ширину (SpanAvailWidth), и без этого флага она забирает
+    // себе весь клик, включая тот, что метил в иконку видимости: глазок
+    // выглядел кнопкой, но не нажимался.
     ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth |
-                               ImGuiTreeNodeFlags_FramePadding;
+                               ImGuiTreeNodeFlags_FramePadding | ImGuiTreeNodeFlags_AllowOverlap;
     if (!hasChildren) flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
     if (host.IsSelected(id)) flags |= ImGuiTreeNodeFlags_Selected;
     // При активном поиске ветки раскрыты: иначе найденный объект остаётся
@@ -220,14 +254,31 @@ void ScenePanel::DrawEntity(DirectorHost& host, Scene& scene, entt::entity e, bo
     if (host.SelectedBone().EntityId == id) ImGui::SetNextItemOpen(true, ImGuiCond_Always);
 
     // Иконка рисуется поверх строки узла: у ImGui нет штатной «иконки в
-    // TreeNode», а отступ под неё даём пробелами в подписи.
+    // TreeNode», а место под неё освобождается пробелами в подписи. Ширина
+    // этого места МЕРЯЕТСЯ, а не подбирается числом: пробел в другом шрифте или
+    // при другом масштабе интерфейса шире, и подогнанный вручную сдвиг снова
+    // разъезжается с иконкой.
     const ImVec2 rowPos = ImGui::GetCursorScreenPos();
-    const bool open = ImGui::TreeNodeEx("##node", flags, "      %s", name.c_str());
+    const float iconGap = ImGui::CalcTextSize(kIconPad).x;
+
+    // Длинное имя обрезаем колонкой глазка, иначе оно проезжает под иконку
+    // видимости и налезает на неё.
+    const float rowHeight = ImGui::GetFrameHeight();
+    ImGui::PushClipRect(ImVec2(rowPos.x, rowPos.y),
+                        ImVec2(ImGui::GetWindowPos().x - ImGui::GetScrollX() + VisibleRightEdge() -
+                                   kEyeColumn - kLabelGap,
+                               rowPos.y + rowHeight),
+                        true);
+    const bool open = ImGui::TreeNodeEx("##node", flags, "%s%s", kIconPad, name.c_str());
     const bool nodeClicked = ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen();
+    // Вертикальный центр берём из настоящего прямоугольника строки: с
+    // FramePadding она выше строки текста, и центрировать по высоте шрифта
+    // означает посадить иконку выше середины.
+    const float rowCenterY = (ImGui::GetItemRectMin().y + ImGui::GetItemRectMax().y) * 0.5f;
+    ImGui::PopClipRect();
 
     Icons::Draw(ImGui::GetWindowDrawList(), IconForEntity(scene, e),
-                ImVec2(rowPos.x + ImGui::GetTreeNodeToLabelSpacing() + 7.0f,
-                       rowPos.y + ImGui::GetTextLineHeight() * 0.5f + 2.0f),
+                ImVec2(rowPos.x + ImGui::GetTreeNodeToLabelSpacing() + iconGap * 0.5f, rowCenterY),
                 14.0f, host.IsSelected(id) ? Theme::Colors::Text : Theme::Colors::TextDim);
 
     if (nodeClicked) {
@@ -289,13 +340,16 @@ void ScenePanel::DrawEntity(DirectorHost& host, Scene& scene, entt::entity e, bo
     }
 
     // --- Глазок видимости (справа) ---
+    // Столбец глазков стоит у ВИДИМОГО правого края панели и одинаков для всех
+    // строк — независимо от вложенности объекта и длины его имени.
     StageItemComponent& item = reg.get_or_emplace<StageItemComponent>(e);
-    const float eyeX = ImGui::GetWindowContentRegionMax().x - 20.0f;
     ImGui::SameLine();
-    ImGui::SetCursorPosX(eyeX);
+    ImGui::SetCursorPosX(VisibleRightEdge() - kEyeColumn);
+    // И по вертикали — в середину строки, а не под её верхний край.
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (rowHeight - kEyeSize) * 0.5f);
     bool visible = item.Visible;
     if (Icons::ToggleIcon("vis", Icon::Eye, Icon::EyeOff, visible,
-                          visible ? T("Скрыть объект") : T("Показать объект"))) {
+                          visible ? T("Скрыть объект") : T("Показать объект"), kEyeSize)) {
         host.PushUndo();
         item.Visible = visible;
     }
@@ -317,19 +371,28 @@ void ScenePanel::Draw(DirectorHost& host) {
 
     // --- Строка поиска ---
     {
+        // Кнопки справа от поля меряем, а не закладываем числом: 56 подходило
+        // ровно к прежнему размеру кнопок, и любое его изменение оставляло поле
+        // либо с дырой, либо наезжающим на кнопки.
+        const float buttons = kSearchButtonSize * 2.0f + ImGui::GetStyle().ItemSpacing.x * 2.0f;
         const ImVec2 pos = ImGui::GetCursorScreenPos();
-        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 56.0f);
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - buttons);
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(24, 4));
         ImGui::InputTextWithHint("##search", T("Поиск..."), &m_filter);
         ImGui::PopStyleVar();
-        Icons::Draw(ImGui::GetWindowDrawList(), Icon::Search,
-                    ImVec2(pos.x + 13.0f, pos.y + ImGui::GetFrameHeight() * 0.5f),
+        // Центр лупы — по НАСТОЯЩЕЙ высоте поля. GetFrameHeight() после
+        // PopStyleVar считает высоту по обычному отступу, а поле нарисовано с
+        // отступом 4 — лупа от этого сидела ниже середины.
+        const float fieldCenterY = (ImGui::GetItemRectMin().y + ImGui::GetItemRectMax().y) * 0.5f;
+        Icons::Draw(ImGui::GetWindowDrawList(), Icon::Search, ImVec2(pos.x + 13.0f, fieldCenterY),
                     13.0f, Theme::Colors::TextFaint);
     }
     ImGui::SameLine();
-    if (Icons::IconButton("add", Icon::Add, T("Добавить объект"))) ImGui::OpenPopup("##addobj");
+    if (Icons::IconButton("add", Icon::Add, T("Добавить объект"), false, true, kSearchButtonSize))
+        ImGui::OpenPopup("##addobj");
     ImGui::SameLine();
-    if (Icons::IconButton("del", Icon::Trash, T("Удалить выбранное"), false, host.SelectedId() >= 0))
+    if (Icons::IconButton("del", Icon::Trash, T("Удалить выбранное"), false, host.SelectedId() >= 0,
+                          kSearchButtonSize))
         host.DeleteSelected();
 
     if (ImGui::BeginPopup("##addobj")) {
@@ -352,7 +415,12 @@ void ScenePanel::Draw(DirectorHost& host) {
     ImGui::Separator();
 
     // --- Дерево ---
-    ImGui::BeginChild("##tree", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
+    // Без горизонтальной прокрутки СОЗНАТЕЛЬНО: столбец глазков стоит у правого
+    // края, и уехавшее вбок дерево уносило бы его за пределы видимой области —
+    // скрыть объект стало бы нельзя, не прокрутив панель обратно. Длинные имена
+    // вместо этого обрезаются по колонке глазка (как в любом дереве объектов),
+    // а полное имя всегда видно в инспекторе.
+    ImGui::BeginChild("##tree", ImVec2(0, 0), false);
 
     // Корневой узел «Scene» — как в референсе; на него можно бросить объект,
     // чтобы открепить его от родителя.
@@ -381,14 +449,19 @@ void ScenePanel::Draw(DirectorHost& host) {
             if (items.empty()) continue; // пустых категорий не показываем
 
             const ImVec2 pos = ImGui::GetCursorScreenPos();
+            const float gap = ImGui::CalcTextSize(kIconPad).x;
             ImGui::SetNextItemOpen(true, ImGuiCond_FirstUseEver);
             const bool open = ImGui::TreeNodeEx(CategoryName((Category)c),
                                                 ImGuiTreeNodeFlags_SpanAvailWidth |
                                                 ImGuiTreeNodeFlags_DefaultOpen,
-                                                "     %s", CategoryName((Category)c));
+                                                "%s%s", kIconPad, CategoryName((Category)c));
+            // Тот же приём, что и в строках объектов: место под иконку меряем,
+            // центр строки берём из её настоящего прямоугольника. Раньше здесь
+            // стояли свои числа отступа и свои пробелы в подписи — на пиксель
+            // другие, чем у объектов, и столбец иконок шёл уступом.
             Icons::Draw(ImGui::GetWindowDrawList(), Icon::Folder,
-                        ImVec2(pos.x + ImGui::GetTreeNodeToLabelSpacing() + 6.0f,
-                               pos.y + ImGui::GetTextLineHeight() * 0.5f + 2.0f),
+                        ImVec2(pos.x + ImGui::GetTreeNodeToLabelSpacing() + gap * 0.5f,
+                               (ImGui::GetItemRectMin().y + ImGui::GetItemRectMax().y) * 0.5f),
                         13.0f, Theme::Colors::TextFaint);
             if (open) {
                 for (entt::entity e : items) DrawEntity(host, scene, e, true);

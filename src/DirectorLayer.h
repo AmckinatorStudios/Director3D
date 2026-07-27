@@ -162,6 +162,8 @@ public:
     RenderQueue& Queue() override { return m_queue; }
     void StartQueue() override;
     void StartRender() override;
+    void CancelRender() override;
+    RenderOutcome& LastRender() override { return m_lastRender; }
     std::filesystem::path& AssetsDir() override { return m_assetsDir; }
     const std::filesystem::path& SelectedAsset() const override { return m_selectedAsset; }
     void SetSelectedAsset(const std::filesystem::path& path) override { m_selectedAsset = path; }
@@ -221,6 +223,8 @@ private:
     // Очередь заданий рендера. Пуста в обычной работе; наполняется из диалога
     // настроек рендера кнопкой «В очередь».
     RenderQueue m_queue;
+    // Итог последнего рендера — показывается, пока человек его не закроет.
+    RenderOutcome m_lastRender;
     // Запускает следующее задание очереди. Возвращает false, когда очередь
     // исчерпана.
     bool StartNextQueued();

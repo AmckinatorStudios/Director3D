@@ -42,6 +42,21 @@ enum class Dialog { None, NewProject, OpenProject, SaveProjectAs, ImportAsset, E
                     ExportGltf,
                     RenderSettings, TimelineSettings, About, Shortcuts };
 
+// Итог последнего рендера — держится, пока человек его не закроет.
+//
+// Почему не строкой в статус-баре, как раньше: сообщение там живёт пять секунд,
+// а рендер идёт минуты. Человек уходит с чашкой чая и возвращается к окну, из
+// которого уже всё исчезло — «то ли получилось, то ли нет, и где искать файл».
+// Итог обязан дождаться того, кто его заказывал.
+struct RenderOutcome {
+    bool Shown = false;   // есть что показать
+    bool Ok = false;
+    std::string Path;     // файл ролика или каталог секвенции
+    std::string Message;  // причина, если Ok == false
+    int Frames = 0;
+    float Seconds = 0.0f;
+};
+
 // ---------------------------------------------------------------------------
 // DirectorHost — контракт, через который панели интерфейса разговаривают с
 // приложением.
@@ -183,6 +198,12 @@ public:
     virtual RenderQueue& Queue() = 0;
     virtual void StartQueue() = 0;
     virtual void StartRender() = 0;
+    // Останавливает рендер и очередь и записывает итог. Не Exporter().Cancel():
+    // тот только гасит экспортёр, оставляя очередь запускать следующее задание,
+    // головку — на случайном кадре, а человека — без ответа, что произошло.
+    virtual void CancelRender() = 0;
+    // Итог последнего рендера: что записалось, куда и за сколько.
+    virtual RenderOutcome& LastRender() = 0;
 
     // --- Панель ассетов ------------------------------------------------------
     virtual std::filesystem::path& AssetsDir() = 0;

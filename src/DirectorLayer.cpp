@@ -84,6 +84,11 @@ DirectorLayer::~DirectorLayer() = default;
 void DirectorLayer::OnAttach() {
     sage::Application& app = sage::Application::Get();
 
+    // Каталог вывода — в домашней папке, а не рядом с программой. Режимы
+    // командной строки (--render, --smoke-test) задают свой путь и перебивают
+    // это значение позже, когда доходят до запуска задания.
+    m_renderSettings.OutputDir = DefaultRenderDir();
+
     // --- ImGui: доки + вытаскивание панелей в отдельные окна ОС ---
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -994,6 +999,16 @@ void DirectorLayer::OnUpdate(float dt) {
     // каждый экспортируемый момент, и обычное проигрывание туда лезть не должно.
     if (m_exporter.Active()) {
         if (!m_exporter.Step(*m_scene, m_renderer, m_doc)) {
+            // Итог снимаем СРАЗУ по окончании шага: дальше сцена откатывается на
+            // время до рендера, и спросить экспортёр «как всё прошло» будет уже
+            // не у чего.
+            m_lastRender.Shown = true;
+            m_lastRender.Ok = !m_exporter.Failed();
+            m_lastRender.Path = m_exporter.ResultPath();
+            m_lastRender.Message = m_exporter.Error();
+            m_lastRender.Frames = m_exporter.TotalFrames();
+            m_lastRender.Seconds = m_exporter.ElapsedSeconds();
+
             if (m_exporter.Failed()) SetStatus("Рендер прерван: " + m_exporter.Error());
             else SetStatus("Рендер завершён: " + m_exporter.ResultPath());
             m_playback.SetTime(m_timeBeforeRender, m_doc.Duration);
@@ -1038,41 +1053,62 @@ void DirectorLayer::OnUpdate(float dt) {
 }
 
 void DirectorLayer::OnRender() {
-    if (m_exporter.Active()) return; // кадр занят экспортом
+    // Во время экспорта пропускаем ТОЛЬКО проходы вьюпорта: сцена в этот момент
+    // стоит на экспортируемом кадре, и снимать её ещё и для панелей — двойная
+    // работа поверх и без того тяжёлого кадра.
+    //
+    // А вот интерфейс рисуется как обычно, и это принципиально. Раньше здесь
+    // стоял выход из функции целиком — то есть на всё время рендера окно
+    // переставало перерисовываться и застывало. Прогресс-полоса при этом честно
+    // считалась, но нарисовать её было некому, и снаружи рендер выглядел ровно
+    // как зависшая программа: картинка не меняется, нажатия ничего не делают,
+    // сколько ждать — неизвестно. Ролик на пару минут неотличим от намертво
+    // повисшего инструмента, и единственным разумным действием оставалось снять
+    // задачу — потеряв работу.
+    const bool exporting = m_exporter.Active();
 
-    LightingEnvironment env = CollectVisibleLighting(*m_scene);
+    // Пакетный рендер с ключа командной строки и smoke-тест идут без человека
+    // у экрана: там интерфейс — чистые накладные расходы на каждый кадр.
+    const bool headless = m_jobStarted || m_smokeTest;
+
 #ifdef D3D_PROFILE_FRAME
     auto t0 = std::chrono::steady_clock::now();
+    auto t1 = t0, t2 = t0;
 #endif
-    // Каскады строим под камеру КАДРА (с учётом монтажа): проход теней один на
-    // оба вида, и выбирать между ними надо в пользу той картинки, которая
-    // уйдёт в ролик.
-    ShadowMap::CameraView shadowCam;
-    const bool haveShadowCam =
-        m_renderer.CascadeViewOf(*m_scene, EffectiveCameraId(),
-                                 (float)m_renderer.RenderViewWidth() /
-                                     (float)std::max(m_renderer.RenderViewHeight(), 1),
-                                 shadowCam);
-    m_renderer.RenderShadow(*m_scene, env, haveShadowCam ? &shadowCam : nullptr);
+    if (!exporting) {
+        LightingEnvironment env = CollectVisibleLighting(*m_scene);
+        // Каскады строим под камеру КАДРА (с учётом монтажа): проход теней один на
+        // оба вида, и выбирать между ними надо в пользу той картинки, которая
+        // уйдёт в ролик.
+        ShadowMap::CameraView shadowCam;
+        const bool haveShadowCam =
+            m_renderer.CascadeViewOf(*m_scene, EffectiveCameraId(),
+                                     (float)m_renderer.RenderViewWidth() /
+                                         (float)std::max(m_renderer.RenderViewHeight(), 1),
+                                     shadowCam);
+        m_renderer.RenderShadow(*m_scene, env, haveShadowCam ? &shadowCam : nullptr);
 #ifdef D3D_PROFILE_FRAME
-    auto t1 = std::chrono::steady_clock::now();
+        t1 = std::chrono::steady_clock::now();
 #endif
-    // Кадр снимается ЭФФЕКТИВНОЙ камерой: если на этом времени стоит склейка,
-    // берётся она, иначе — ручной выбор. Так перемотка показывает готовый
-    // монтаж, ничего не записывая в m_activeCameraId: ручной выбор человека
-    // остаётся его выбором.
-    const int shotCamera = EffectiveCameraId();
-    m_renderer.RenderStage(*m_scene, m_camera, env, m_shading, m_preset, shotCamera,
-                           m_overlays, m_selection, m_view, m_proj);
+        // Кадр снимается ЭФФЕКТИВНОЙ камерой: если на этом времени стоит склейка,
+        // берётся она, иначе — ручной выбор. Так перемотка показывает готовый
+        // монтаж, ничего не записывая в m_activeCameraId: ручной выбор человека
+        // остаётся его выбором.
+        const int shotCamera = EffectiveCameraId();
+        m_renderer.RenderStage(*m_scene, m_camera, env, m_shading, m_preset, shotCamera,
+                               m_overlays, m_selection, m_view, m_proj);
 #ifdef D3D_PROFILE_FRAME
-    auto t2 = std::chrono::steady_clock::now();
+        t2 = std::chrono::steady_clock::now();
 #endif
-    m_renderer.RenderCameraView(*m_scene, env, shotCamera);
+        m_renderer.RenderCameraView(*m_scene, env, shotCamera);
 
-    // Шаг времени закрыт: оба вида этого момента нарисованы, и положение
-    // объектов можно запомнить как «прошлое» для смаза движения. Раньше —
-    // нельзя: второй вид сравнил бы мир сам с собой и получил нули.
-    m_renderer.EndTimeStep();
+        // Шаг времени закрыт: оба вида этого момента нарисованы, и положение
+        // объектов можно запомнить как «прошлое» для смаза движения. Раньше —
+        // нельзя: второй вид сравнил бы мир сам с собой и получил нули.
+        m_renderer.EndTimeStep();
+    }
+
+    if (exporting && headless) return;
 
     // Экранный буфер очищаем сами: превью-кадры ушли в свои FBO, а окно под
     // интерфейс надо привести в известное состояние (и вернуть ему viewport,
@@ -2185,6 +2221,33 @@ void DirectorLayer::StartRender() {
         return;
     }
     SetStatus("Рендер запущен: " + std::to_string(m_exporter.TotalFrames()) + " кадр(ов)");
+}
+
+void DirectorLayer::CancelRender() {
+    if (!m_exporter.Active()) return;
+    const int done = m_exporter.CurrentFrame();
+    const int total = m_exporter.TotalFrames();
+    const float elapsed = m_exporter.ElapsedSeconds();
+    m_exporter.Cancel();
+
+    // Очередь тоже останавливаем: «отменить» относится к рендеру целиком, иначе
+    // отмена одного задания немедленно запустила бы следующее, и кнопка
+    // выглядела бы неработающей.
+    m_queue.Jobs.clear();
+
+    m_lastRender.Shown = true;
+    m_lastRender.Ok = false;
+    m_lastRender.Path = m_exporter.ResultPath();
+    m_lastRender.Message = "Рендер отменён на кадре " + std::to_string(done) + " из " +
+                           std::to_string(total);
+    m_lastRender.Frames = done;
+    m_lastRender.Seconds = elapsed;
+
+    // Возвращаем головку туда, где человек её оставил: экспорт гонял её по
+    // всему ролику, и бросить её на случайном кадре — потерять место работы.
+    m_playback.SetTime(m_timeBeforeRender, m_doc.Duration);
+    ApplyDocument(true);
+    SetStatus("Рендер отменён");
 }
 
 void DirectorLayer::StartQueue() {

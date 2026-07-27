@@ -184,7 +184,7 @@ void MenuBarPanel::Draw(DirectorHost& host) {
     if (ImGui::BeginMenu(T("Рендер"))) {
         if (ImGui::MenuItem(T("Настройки рендера…"))) host.OpenDialog(Dialog::RenderSettings);
         if (ImGui::MenuItem(T("Рендер секвенции"), "F12", false, !host.Exporter().Active())) host.StartRender();
-        if (ImGui::MenuItem(T("Отменить рендер"), nullptr, false, host.Exporter().Active())) host.Exporter().Cancel();
+        if (ImGui::MenuItem(T("Отменить рендер"), nullptr, false, host.Exporter().Active())) host.CancelRender();
         ImGui::EndMenu();
     }
 

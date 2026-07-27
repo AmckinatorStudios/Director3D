@@ -1,4 +1,5 @@
 #pragma once
+#include <chrono>
 #include <optional>
 #include <string>
 #include <vector>
@@ -13,6 +14,17 @@ struct LightingEnvironment;
 namespace d3d {
 
 class StageRenderer;
+
+// Каталог вывода по умолчанию: <домашняя папка>/Director3D/render.
+//
+// Раньше по умолчанию стоял относительный путь "render" — то есть «рядом с
+// программой». На Linux из каталога сборки это работало, на Windows же
+// программа лежит там, куда её распаковали: в Program Files или в Загрузках
+// внутри архива. В первом случае каталог просто не создаётся (нет прав), во
+// втором готовый ролик оказывается внутри временной папки. И в обоих человек
+// не знает, где искать результат. Домашняя папка есть всегда, доступна на
+// запись всегда и находится без объяснений.
+std::string DefaultRenderDir();
 
 // ---------------------------------------------------------------------------
 // SequenceExporter — вывод готового ролика в файлы.
@@ -103,6 +115,18 @@ public:
     int CurrentFrame() const { return m_current; }
     int TotalFrames() const { return m_total; }
     float Progress() const { return m_total > 0 ? (float)m_current / (float)m_total : 0.0f; }
+
+    // Сколько идёт экспорт и сколько ещё ждать, в секундах. Без этих двух чисел
+    // прогресс-полоса отвечает только на «сколько сделано», а человек у экрана
+    // спрашивает «уходить мне или нет» — и, не получив ответа, решает, что
+    // программа повисла.
+    //
+    // Оценка считается по уже снятым кадрам, поэтому первые пару кадров она
+    // отсутствует (RemainingSeconds вернёт -1): врать «осталось 0 секунд» на
+    // старте хуже, чем честно промолчать.
+    float ElapsedSeconds() const;
+    float RemainingSeconds() const;
+
     const std::string& OutputDir() const { return m_settings.OutputDir; }
     // Человекочитаемый путь результата — то, что показывается в статус-баре.
     const std::string& ResultPath() const { return m_resultPath; }
@@ -128,6 +152,9 @@ private:
     int m_total = 0;
     int m_firstFrame = 0;
     float m_fps = 24.0f;
+    // Отсчёт для оценки времени. steady_clock, а не system_clock: перевод часов
+    // посреди рендера не должен превращать оставшееся время в отрицательное.
+    std::chrono::steady_clock::time_point m_startedAt{};
 };
 
 // Одно задание очереди: имя для списка и полные настройки экспорта.
