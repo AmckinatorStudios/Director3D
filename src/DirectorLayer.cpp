@@ -27,6 +27,7 @@
 #include "sage/audio/AudioEngine.h"
 #include "sage/core/Application.h"
 #include "sage/core/Log.h"
+#include "sage/core/Profiler.h"
 #include "sage/ecs/LightSystem.h"
 #include "sage/render/ParticleECS.h"
 #include "sage/rhi/GraphicsDevice.h"
@@ -147,6 +148,10 @@ void DirectorLayer::OnAttach() {
     }
 
     if (std::getenv("D3D_ADVANCED")) m_simpleMode = false;
+    // Профилировщик кадра. Открывается той же галочкой, что из меню «Окно», —
+    // переменная нужна проверкам без человека за монитором и запуску «покажи
+    // сразу, куда уходит время», без хождения по меню.
+    if (std::getenv("D3D_PROFILE")) m_profiler.Visible() = true;
     if (const char* tab = std::getenv("D3D_TIMELINE_TAB")) m_timeline.SetTab(std::atoi(tab));
     if (std::getenv("D3D_DEMO")) BuildDemoAnimation();
     // Полная демо-постановка в интерфейсе — то же, что уходит в --showcase.
@@ -1150,6 +1155,7 @@ void DirectorLayer::DrawUI() {
     m_world.Draw(*this);
 
     m_timeline.Draw(*this);
+    m_profiler.Draw(*this);
     m_dialogs.Draw(*this);
 
     ImGui::Render();
@@ -1162,6 +1168,16 @@ void DirectorLayer::DrawUI() {
         m_autoScreenshotFrame = 0; // один снимок за запуск
         Window& window = sage::Application::Get().GetWindow();
         SaveScreenshot(m_autoScreenshotPath, window.Width(), window.Height());
+        // Заодно выкладываем таблицу проходов в лог: на снимке видно, что панель
+        // нарисовалась, но не видно, что в ней настоящие числа, — а проверять
+        // надо именно это.
+        if (sage::profile::Enabled()) {
+            LOG_INFO("Профиль") << sage::profile::Summary();
+            for (const sage::profile::Entry& e : sage::profile::Average()) {
+                LOG_INFO("Профиль") << std::string((size_t)e.Depth * 2, ' ') << e.Name
+                                    << ": CPU " << e.CpuMs << " мс, GPU " << e.GpuMs << " мс";
+            }
+        }
         sage::Application::Get().Close();
     }
 

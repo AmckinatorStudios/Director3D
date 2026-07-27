@@ -20,6 +20,7 @@
 #include "ui/panels/PropertiesPanel.h"
 #include "ui/panels/ScenePanel.h"
 #include "ui/panels/StagePanel.h"
+#include "ui/panels/ProfilerPanel.h"
 #include "ui/panels/StatusBarPanel.h"
 #include "ui/panels/TimelinePanel.h"
 #include "ui/panels/ToolbarPanel.h"
@@ -150,6 +151,7 @@ public:
 
     // --- DirectorHost: режим ---
     bool& SimpleMode() override { return m_simpleMode; }
+    bool& ShowProfiler() override { return m_profiler.Visible(); }
     void SetStatus(const std::string& message) override;
     const std::string& Status() const override { return m_status; }
 
@@ -284,6 +286,7 @@ private:
     PropertiesPanel m_properties;
     WorldPanel m_world;
     StatusBarPanel m_statusBar;
+    ProfilerPanel m_profiler;
     DialogsPanel m_dialogs;
 
     bool m_imguiReady = false;

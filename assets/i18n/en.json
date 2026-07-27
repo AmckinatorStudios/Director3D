@@ -599,5 +599,17 @@
   "путь пуст": "the path is empty",
   "размер": "size",
   "ручная: ": "manual: ",
-  "это не каталог": "not a folder"
+  "это не каталог": "not a folder",
+  "(таймеров GPU нет)": "(no GPU timers)",
+  "CPU, мс": "CPU, ms",
+  "GPU, мс": "GPU, ms",
+  "Драйвер не даёт меток времени GPU — показано только время CPU.": "The driver provides no GPU timestamps — CPU time only.",
+  "Нет данных: кадры ещё не собраны.": "No data yet: frames have not been collected.",
+  "Профилировщик": "Profiler",
+  "Проход": "Pass",
+  "Сглаженные значения": "Smoothed values",
+  "Сколько миллисекунд занял каждый проход кадра.": "How many milliseconds each frame pass took.",
+  "кадр, мс:  CPU": "frame, ms:  CPU",
+  "Покадровые числа скачут на десятки процентов из-за планировщика ОС.\nСмотреть надо на сглаженные; покадровые нужны, чтобы поймать рывок.": "Per-frame numbers swing by tens of percent because of OS scheduling.\nRead the smoothed ones; per-frame is for catching a hitch.",
+  "Узкое место — максимум из CPU и GPU, а не их сумма:\nпроцессор собирает следующий кадр, пока видеокарта рисует прошлый.": "The bottleneck is the maximum of CPU and GPU, not their sum:\nthe CPU builds the next frame while the GPU draws the previous one."
 }

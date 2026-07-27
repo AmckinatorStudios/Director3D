@@ -107,6 +107,7 @@ add_executable(Director3D
     src/ui/panels/TimelinePanel.cpp
     src/ui/panels/PropertiesPanel.cpp
     src/ui/panels/WorldPanel.cpp
+    src/ui/panels/ProfilerPanel.cpp
     src/ui/panels/StatusBarPanel.cpp
     src/ui/panels/DialogsPanel.cpp
     src/SelfTest.cpp

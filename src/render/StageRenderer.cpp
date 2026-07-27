@@ -11,6 +11,7 @@
 #include "sage/anim/AnimationSystem.h"
 #include "sage/core/Application.h"
 #include "sage/core/Config.h"
+#include "sage/core/Profiler.h"
 #include "sage/ecs/CameraView.h"
 #include "sage/ecs/LightSystem.h"
 #include "sage/render/ResourceManager.h"
@@ -259,6 +260,7 @@ static bool ShadowBounds(Scene& scene, glm::vec3& center, float& radius) {
 }
 
 void StageRenderer::RenderShadow(Scene& scene, const LightingEnvironment& env) {
+    SAGE_PROFILE("Тени");
     Window& window = sage::Application::Get().GetWindow();
     HiddenObjects hidden(scene); // спрятанное не отбрасывает тень
 
@@ -502,19 +504,26 @@ Framebuffer& StageRenderer::RenderFrame(Scene& scene, const LightingEnvironment&
     HiddenObjects hidden(scene); // погашенное глазком не рисуется и не светит
 
     // --- Проход 1: очистка и небо ---
-    d.Hdr->Bind();
-    device.SetClearColor(d.ClearColor.r, d.ClearColor.g, d.ClearColor.b, d.ClearColor.a);
-    device.Clear();
-    if (d.Sky) DrawSky(env, d.View, d.Proj);
+    {
+        SAGE_PROFILE("Небо");
+        d.Hdr->Bind();
+        device.SetClearColor(d.ClearColor.r, d.ClearColor.g, d.ClearColor.b, d.ClearColor.a);
+        device.Clear();
+        if (d.Sky) DrawSky(env, d.View, d.Proj);
+    }
 
     // --- Проход 2: геометрия (батч + скелетные модели + частицы) ---
-    DrawScene(scene, env, d.View, d.Proj, d.ViewPos, d.Shading);
+    {
+        SAGE_PROFILE("Геометрия");
+        DrawScene(scene, env, d.View, d.Proj, d.ViewPos, d.Shading);
+    }
 
     // --- Проход 3: сетка ---
     // После геометрии и ДО служебной графики: она полупрозрачна и должна
     // смешиваться с уже нарисованной сценой, а каркасы камер и светов должны
     // ложиться поверх неё.
     if (d.Grid) {
+        SAGE_PROFILE("Сетка");
         sage::render::GridSettings grid = *d.Grid;
         grid.Enabled = true;
         m_grid.Draw(d.View, d.Proj, d.ViewPos, grid);
@@ -523,6 +532,7 @@ Framebuffer& StageRenderer::RenderFrame(Scene& scene, const LightingEnvironment&
     // --- Проход 4: служебная графика вьюпорта ---
     // В тот же буфер и с тестом глубины, чтобы объекты корректно её заслоняли.
     if (d.Helpers) {
+        SAGE_PROFILE("Служебная графика");
         DrawHelpers(scene, *d.Helpers, d.Outline ? *d.Outline : std::vector<int>{},
                     d.HelperAspect);
         m_debug->Flush(d.View, d.Proj);
@@ -531,7 +541,10 @@ Framebuffer& StageRenderer::RenderFrame(Scene& scene, const LightingEnvironment&
     // Многосэмпловое содержимое переносится в обычные текстуры. Строго ЗДЕСЬ:
     // вся геометрия и служебная графика уже нарисованы, а всё, что дальше,
     // читает буфер как текстуру — а многосэмпловую обычный sampler2D не берёт.
-    d.Hdr->Resolve();
+    {
+        SAGE_PROFILE("Разрешение MSAA");
+        d.Hdr->Resolve();
+    }
 
     // --- Проход 5: скорости ---
     // Отдельный проход геометрии, пишущий экранное смещение каждого пикселя за
@@ -540,6 +553,7 @@ Framebuffer& StageRenderer::RenderFrame(Scene& scene, const LightingEnvironment&
     unsigned int velocityTexture = 0;
     if (d.Velocity && d.PrevViewProj && d.FxSettings.MotionBlurEnabled &&
         d.FxSettings.MotionBlurAmount > 0.0f) {
+        SAGE_PROFILE("Скорости");
         if (!m_velocityFbo || m_velocityFbo->Width() != d.Hdr->Width() ||
             m_velocityFbo->Height() != d.Hdr->Height()) {
             m_velocityFbo.emplace(d.Hdr->Width(), d.Hdr->Height());
@@ -557,6 +571,7 @@ Framebuffer& StageRenderer::RenderFrame(Scene& scene, const LightingEnvironment&
     // --- Проход 6: пост-обработка ---
     Framebuffer* result = d.Hdr;
     if (d.Fx && d.Output) {
+        SAGE_PROFILE("Пост-обработка");
         d.Fx->Render(d.Hdr->ColorTexture(), d.Hdr->DepthTexture(), d.Hdr->Width(), d.Hdr->Height(),
                      d.Proj, d.View, d.FxSettings, d.Output, 0, 0, d.Output->Width(),
                      d.Output->Height(), velocityTexture);
@@ -567,6 +582,7 @@ Framebuffer& StageRenderer::RenderFrame(Scene& scene, const LightingEnvironment&
     // Строго последней и поверх результата пост-обработки: обводка — это
     // указание инструмента, а не часть изображения, и тон-маппинг её съел бы.
     if (d.Outline && !d.Outline->empty()) {
+        SAGE_PROFILE("Обводка");
         RenderOutline(scene, *d.Outline, d.View, d.Proj, *result);
     }
 

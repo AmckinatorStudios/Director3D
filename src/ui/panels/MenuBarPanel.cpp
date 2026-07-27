@@ -192,6 +192,10 @@ void MenuBarPanel::Draw(DirectorHost& host) {
         // Простой/продвинутый — здесь же, чтобы переключатель нашёлся и без
         // тулбара (панель можно спрятать, меню — нет).
         ImGui::MenuItem(T("Простой режим"), nullptr, &host.SimpleMode());
+        ImGui::MenuItem(T("Профилировщик"), nullptr, &host.ShowProfiler());
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("%s", T("Сколько миллисекунд занял каждый проход кадра."));
+        }
         ImGui::Separator();
 
         // Язык интерфейса. Названия языков НЕ переводятся: человек, открывший
