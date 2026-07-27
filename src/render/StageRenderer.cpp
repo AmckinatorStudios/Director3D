@@ -17,6 +17,7 @@
 #include "sage/ecs/CameraView.h"
 #include "sage/ecs/LightSystem.h"
 #include "sage/render/ResourceManager.h"
+#include "sage/render/ScenePasses.h"
 #include "sage/rhi/GraphicsDevice.h"
 #include "sage/scene/Components.h"
 
@@ -288,7 +289,6 @@ bool StageRenderer::CascadeViewOf(Scene& scene, int cameraEntityId, float aspect
 
 void StageRenderer::RenderShadow(Scene& scene, const LightingEnvironment& env,
                                  const ShadowMap::CameraView* camera) {
-    SAGE_PROFILE("Тени");
     Window& window = sage::Application::Get().GetWindow();
     HiddenObjects hidden(scene); // спрятанное не отбрасывает тень
 
@@ -324,28 +324,24 @@ void StageRenderer::RenderShadow(Scene& scene, const LightingEnvironment& env,
     } else {
         m_shadows->SetLightMatrix(env.Sun.Direction, center, radius);
     }
-    for (int c = 0; c < m_shadows->CascadeCount(); ++c) {
-        m_shadows->BeginRender(c);
-        m_batch.RenderDepth(scene, m_shadows->LightMatrix(c));
-        sage::anim::DrawAnimatedModelsDepth(scene, m_shadows->LightMatrix(c));
-        // Одна карта: остальные каскады — её копии, рисовать в них незачем.
-        if (m_shadows->ActiveCascades() == 1) break;
-    }
-    m_shadows->EndRender(window.Width(), window.Height());
+    sage::render::RenderShadowDepth(*m_shadows, scene, m_batch, window.Width(), window.Height());
 }
 
 void StageRenderer::DrawScene(Scene& scene, const LightingEnvironment& env, const glm::mat4& view,
                               const glm::mat4& proj, const glm::vec3& viewPos, ShadingMode shading) {
-    sage::rhi::GraphicsDevice& device = sage::Application::Get().Device();
-    const bool wireframe = (shading == ShadingMode::Wireframe);
+    sage::render::SceneColorInput color;
+    color.View = view;
+    color.Proj = proj;
+    color.ViewPos = viewPos;
+    color.Env = &env;
+    color.Shadows = ShadowBinding(*m_shadows, true);
+    color.ShadingMode = ShadingCode(shading);
+    color.Wireframe = (shading == ShadingMode::Wireframe);
+    color.OcclusionCulling = sage::EngineConfig::Get().OcclusionCulling;
+    m_stats = sage::render::RenderSceneColor(scene, m_batch, color);
 
-    if (wireframe) device.SetPolygonMode(sage::rhi::PolygonMode::Line);
-    m_stats = m_batch.RenderColor(scene, view, proj, viewPos, env,
-                                  ShadowBinding(*m_shadows, true), ShadingCode(shading));
-    if (wireframe) device.SetPolygonMode(sage::rhi::PolygonMode::Fill);
-
-    sage::anim::DrawAnimatedModels(scene, view, proj, viewPos, env,
-                                   ShadowBinding(*m_shadows, true));
+    // Частицы — после общего прохода: система частиц принадлежит инструменту,
+    // и владеть ею движковый проход не может.
     m_particles->DrawFromView(view, proj);
 }
 
