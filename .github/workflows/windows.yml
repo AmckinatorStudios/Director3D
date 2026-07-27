@@ -1,0 +1,141 @@
+name: Сборка для Windows
+
+# Собирает готовую программу для Windows и кладёт её в раздел Releases —
+# чтобы скачать и запустить можно было без установки чего бы то ни было.
+#
+# Когда запускается:
+#   • при каждой правке в main — обновляет сборку «windows-latest»;
+#   • по кнопке «Run workflow» на вкладке Actions — если сборка нужна сейчас;
+#   • при теге вида v1.0 — делает отдельный релиз с этим номером.
+on:
+  push:
+    # Не только main: рабочие ветки тоже собираются, иначе готовой программы
+    # для скачивания не существует до слияния. Кнопка «Run workflow» на вкладке
+    # Actions, к слову, показывается только для веток по умолчанию — на неё
+    # рассчитывать нельзя.
+    branches: [main, 'claude/**']
+    tags: ['v*']
+  workflow_dispatch:
+
+# Нужно право записи: работа сама публикует релиз.
+permissions:
+  contents: write
+
+env:
+  SAGE_ENGINE_REPO: AmckinatorStudios/SAGE-Engine
+
+jobs:
+  windows:
+    name: Windows (.exe)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Director 3D
+        uses: actions/checkout@v4
+        with:
+          path: Director3D
+
+      # Движок лежит в соседнем репозитории — сначала пробуем ветку с тем же
+      # именем (парная разработка), иначе ветку по умолчанию.
+      - name: Checkout SAGE Engine (парная ветка)
+        id: engine_paired
+        uses: actions/checkout@v4
+        continue-on-error: true
+        with:
+          repository: ${{ env.SAGE_ENGINE_REPO }}
+          ref: ${{ github.head_ref || github.ref_name }}
+          path: SAGE-Engine
+          token: ${{ secrets.SAGE_ENGINE_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Checkout SAGE Engine (ветка по умолчанию)
+        if: steps.engine_paired.outcome != 'success'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SAGE_ENGINE_REPO }}
+          path: SAGE-Engine
+          token: ${{ secrets.SAGE_ENGINE_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Установка кросс-компилятора
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++-mingw-w64-x86-64 ninja-build
+
+      # Кросс-компиляция с Linux, а не сборка на windows-раннере: тулчейн
+      # движка линкует рантайм СТАТИЧЕСКИ, поэтому .exe запускается на чистой
+      # Windows без установки Visual C++ Redistributable и прочих библиотек.
+      # На windows-раннере с MSVC пришлось бы тащить эти зависимости с собой.
+      - name: Сборка
+        run: |
+          cmake -B build-windows -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE=$GITHUB_WORKSPACE/SAGE-Engine/cmake/mingw-toolchain.cmake \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DSAGE_ENGINE_DIR=$GITHUB_WORKSPACE/SAGE-Engine \
+            -S Director3D
+          cmake --build build-windows -j"$(nproc)"
+
+      # Проверяем, что получился именно windows-исполняемый файл С ОКНОМ и что
+      # ему не нужны посторонние DLL. Без этой проверки «сборка прошла» ничего
+      # не значит: получить .exe, который на чистой Windows выдаст «отсутствует
+      # libstdc++-6.dll», очень легко.
+      - name: Проверка результата
+        run: |
+          EXE=build-windows/Director3D.exe
+          test -f "$EXE" || { echo "::error::Director3D.exe не собрался"; exit 1; }
+          file "$EXE"
+          file "$EXE" | grep -q "PE32+ executable (GUI)" \
+            || { echo "::error::Это не оконное windows-приложение"; exit 1; }
+
+          # Список DLL, которые требует программа. Всё, чего нет в этом наборе,
+          # придётся класть в архив рядом — иначе программа не запустится.
+          DLLS=$(x86_64-w64-mingw32-objdump -p "$EXE" | grep "DLL Name" | awk '{print tolower($3)}' | sort -u)
+          echo "Требуются DLL:"; echo "$DLLS"
+          for dll in $DLLS; do
+            case "$dll" in
+              kernel32.dll|user32.dll|gdi32.dll|shell32.dll|msvcrt.dll|advapi32.dll|ole32.dll|winmm.dll|ws2_32.dll|opengl32.dll|imm32.dll|setupapi.dll|version.dll|dwmapi.dll|comdlg32.dll|oleaut32.dll|uuid.dll|bcrypt.dll)
+                ;;
+              *)
+                echo "::error::Нужна посторонняя библиотека $dll — на чистой Windows программа не запустится"
+                exit 1 ;;
+            esac
+          done
+
+      - name: Сборка архива
+        run: |
+          PKG=Director3D-Windows
+          mkdir -p "$PKG"
+          cp build-windows/Director3D.exe "$PKG"/
+          cp -r Director3D/assets "$PKG"/assets
+          # Имя файла — латиницей НАМЕРЕННО. Кириллица в имени внутри zip на
+          # части windows-машин открывается кракозябрами, и человек просто не
+          # поймёт, что это инструкция. Содержимое при этом русское.
+          cp Director3D/docs/README-windows.txt "$PKG"/README.txt
+          zip -r "$PKG.zip" "$PKG" >/dev/null
+          ls -la "$PKG.zip"
+
+      - name: Загрузить архив (вкладка Actions)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Director3D-Windows
+          path: Director3D-Windows.zip
+
+      # Релиз — чтобы ссылка на скачивание была постоянной и лежала на главной
+      # странице репозитория. Заходить на вкладку Actions и искать сборку не
+      # нужно.
+      - name: Опубликовать в Releases
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd Director3D
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            TAG="${{ github.ref_name }}"
+            TITLE="Director 3D $TAG"
+          else
+            TAG="windows-latest"
+            TITLE="Director 3D — последняя сборка для Windows"
+            # Скользящий релиз: старый удаляем, чтобы ссылка всегда вела на
+            # свежую версию, а список релизов не зарастал.
+            gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
+          fi
+          gh release create "$TAG" ../Director3D-Windows.zip \
+            --title "$TITLE" \
+            --notes "Скачайте Director3D-Windows.zip, распакуйте папку целиком и запустите Director3D.exe. Устанавливать ничего не нужно."
