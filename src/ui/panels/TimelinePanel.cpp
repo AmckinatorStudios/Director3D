@@ -36,7 +36,19 @@ constexpr float kNameColumn = 300.0f;
 // Ширина блока кнопок в конце колонки имён — она же граница обрезки подписи.
 constexpr float kTrackButtonsWidth = 78.0f;
 constexpr float kRulerHeight = 22.0f;
+// Высота строки КЛЮЧЕЙ: здесь важна плотность. У персонажа таких строк
+// десятки, и лишние пиксели на каждой означают, что половина не влезет.
 constexpr float kRowHeight = 22.0f;
+// Высота строки МОНТАЖА (склейки камер, блоки клипов). Она заметно больше не
+// ради красоты: в этой строке лежит ТЕКСТ — имя камеры, имя клипа, — и в 22
+// пикселя он помещается только обрезанным. Плюс блоки монтажа таскают мышью,
+// а 22-пиксельную мишень с двумя краями по 4 пикселя поймать тяжело.
+constexpr float kMontageRow = 38.0f;
+// Звуковая дорожка выше остальных: в ней рисуется фонограмма, и на низкой
+// строке волна вырождается в полоску, по которой не найти ни удара, ни паузы.
+constexpr float kAudioRow = 56.0f;
+// Полоса-заголовок зоны.
+constexpr float kZoneHeader = 20.0f;
 
 // Шаг сетки линейки: подбираем «круглый» интервал так, чтобы подписи не
 // налезали друг на друга при любом зуме.
@@ -621,14 +633,14 @@ void TimelinePanel::DrawKeysRow(DirectorHost& host, Track& track, int channel, c
 }
 
 void TimelinePanel::DrawClipTrack(DirectorHost& host, ClipTrack& track, const Layout& l, float y,
-                                  ImDrawList* dl, int colorIndex) {
+                                  float rowH, ImDrawList* dl, int colorIndex) {
     Scene& scene = host.CurrentScene();
     const float left = l.Origin.x + l.TrackX;
     const float right = left + l.Width;
     const ImU32 base = (colorIndex % 2 == 0) ? Theme::Colors::ClipBlockA : Theme::Colors::ClipBlockB;
 
     // Имя персонажа в колонке.
-    Icons::Draw(dl, Icon::Character, ImVec2(l.Origin.x + 20.0f, y + l.RowH * 0.5f), 14.0f,
+    Icons::Draw(dl, Icon::Character, ImVec2(l.Origin.x + 20.0f, y + rowH * 0.5f), 14.0f,
                 track.Muted ? Theme::Colors::TextFaint : Theme::Colors::TextDim);
     dl->AddText(ImVec2(l.Origin.x + 32.0f, y + 3.0f),
                 track.Muted ? Theme::Colors::TextFaint : Theme::Colors::Text,
@@ -648,7 +660,7 @@ void TimelinePanel::DrawClipTrack(DirectorHost& host, ClipTrack& track, const La
         if (x1 < left || x0 > right) continue;
 
         const ImVec2 a(std::max(x0, left), y + 2.0f);
-        const ImVec2 b(std::min(x1, right), y + l.RowH - 2.0f);
+        const ImVec2 b(std::min(x1, right), y + rowH - 2.0f);
         if (b.x - a.x < 2.0f) continue;
 
         dl->AddRectFilled(a, b, base, 3.0f);
@@ -716,15 +728,15 @@ void TimelinePanel::DrawClipTrack(DirectorHost& host, ClipTrack& track, const La
     }
 
     ImGui::PopID();
-    dl->AddLine(ImVec2(l.Origin.x, y + l.RowH), ImVec2(right, y + l.RowH), Theme::Colors::LineSoft, 1.0f);
+    dl->AddLine(ImVec2(l.Origin.x, y + rowH), ImVec2(right, y + rowH), Theme::Colors::LineSoft, 1.0f);
 }
 
-void TimelinePanel::DrawAudioRow(DirectorHost& host, const Layout& l, float y, ImDrawList* dl) {
+void TimelinePanel::DrawAudioRow(DirectorHost& host, const Layout& l, float y, float rowH,
+                                ImDrawList* dl) {
     AnimationDocument& doc = host.Document();
     AudioTrack& audio = doc.Audio;
     const float left = l.Origin.x + l.TrackX;
     const float right = left + l.Width;
-    const float rowH = l.RowH * 1.6f; // звуковая дорожка выше: волну надо видеть
 
     Icons::Draw(dl, audio.Muted ? Icon::Mute : Icon::Audio,
                 ImVec2(l.Origin.x + 20.0f, y + rowH * 0.5f), 14.0f, Theme::Colors::Waveform);
@@ -803,7 +815,8 @@ void TimelinePanel::DrawCameraPicker(DirectorHost& host, int currentId, int cutI
     if (!any) ImGui::TextDisabled("%s", T("В сцене нет камер"));
 }
 
-void TimelinePanel::DrawCameraRow(DirectorHost& host, const Layout& l, float y, ImDrawList* dl) {
+void TimelinePanel::DrawCameraRow(DirectorHost& host, const Layout& l, float y, float rowH,
+                                 ImDrawList* dl) {
     AnimationDocument& doc = host.Document();
     Scene& scene = host.CurrentScene();
     CameraTrack& track = doc.Cameras;
@@ -811,7 +824,7 @@ void TimelinePanel::DrawCameraRow(DirectorHost& host, const Layout& l, float y, 
     const float right = left + l.Width;
     const ImU32 dim = track.Muted ? Theme::Colors::TextFaint : Theme::Colors::Text;
 
-    Icons::Draw(dl, Icon::Camera, ImVec2(l.Origin.x + 20.0f, y + l.RowH * 0.5f), 14.0f,
+    Icons::Draw(dl, Icon::Camera, ImVec2(l.Origin.x + 20.0f, y + rowH * 0.5f), 14.0f,
                 track.Muted ? Theme::Colors::TextFaint : Theme::Colors::TextDim);
     dl->AddText(ImVec2(l.Origin.x + 32.0f, y + 3.0f), dim, T("Монтаж"));
 
@@ -824,7 +837,7 @@ void TimelinePanel::DrawCameraRow(DirectorHost& host, const Layout& l, float y, 
     }
 
     const float top = y + 2.0f;
-    const float bottom = y + l.RowH - 2.0f;
+    const float bottom = y + rowH - 2.0f;
     const int liveCut = doc.CutIndexAt(host.CurrentTime());
 
     // Участок ДО первой склейки рисуется отдельно и приглушённо: там работает
@@ -927,7 +940,7 @@ void TimelinePanel::DrawCameraRow(DirectorHost& host, const Layout& l, float y, 
     }
     ImGui::PopID();
 
-    dl->AddLine(ImVec2(l.Origin.x, y + l.RowH), ImVec2(right, y + l.RowH), Theme::Colors::LineSoft, 1.0f);
+    dl->AddLine(ImVec2(l.Origin.x, y + rowH), ImVec2(right, y + rowH), Theme::Colors::LineSoft, 1.0f);
 }
 
 // ============================================================================
@@ -1011,6 +1024,120 @@ void TimelinePanel::DrawAddTrackMenu(DirectorHost& host) {
 //  Представления
 // ============================================================================
 
+// Число дорожек с правильным окончанием. «3 дорожк(и)» в заголовке зоны
+// выглядит как недоделка, а склонение в русском зависит не от числа, а от его
+// ДВУХ последних цифр: 11-14 всегда «дорожек», хотя оканчиваются на 1-4.
+std::string TrackCountLabel(int n) {
+    const int tens = n % 100, ones = n % 10;
+    const char* form = (tens >= 11 && tens <= 14) ? T("%d дорожек")
+                     : (ones == 1)                ? T("%d дорожка")
+                     : (ones >= 2 && ones <= 4)   ? T("%d дорожки")
+                                                  : T("%d дорожек");
+    char buffer[48];
+    std::snprintf(buffer, sizeof(buffer), form, n);
+    return buffer;
+}
+
+// --- Вертикальная прокрутка -------------------------------------------------
+
+float TimelinePanel::BeginTracks(const Layout& l) {
+    const float top = l.Origin.y + l.RulerH;
+    // Отсечение ставим через ImGui, а не через список отрисовки: оно должно
+    // резать не только пиксели, но и НАЖАТИЯ. Иначе уехавшая под линейку
+    // строка остаётся кликабельной, и мышь ловит невидимый ключ.
+    ImGui::PushClipRect(ImVec2(l.Origin.x, top),
+                        ImVec2(l.Origin.x + l.TrackX + l.Width, l.Origin.y + l.Height), true);
+    return top - m_scrollY;
+}
+
+void TimelinePanel::EndTracks(const Layout& l, float yEnd, ImDrawList* dl) {
+    const float top = l.Origin.y + l.RulerH;
+    const float viewH = std::max(l.Height - l.RulerH, 1.0f);
+    m_contentH = (yEnd + m_scrollY) - top;
+    ImGui::PopClipRect();
+
+    const float maxScroll = std::max(0.0f, m_contentH - viewH);
+    m_scrollY = std::clamp(m_scrollY, 0.0f, maxScroll);
+    if (maxScroll <= 0.0f) { m_draggingScroll = false; return; }
+
+    // Полоса прокрутки. Она нужна не только чтобы тащить: это единственный
+    // признак того, что ниже ЕЩЁ ЕСТЬ дорожки. Без неё пропажа выглядит как
+    // «дорожек больше нет».
+    const float barW = 9.0f;
+    const float x0 = l.Origin.x + l.TrackX + l.Width - barW;
+    const float thumbH = std::max(24.0f, viewH * viewH / m_contentH);
+    const float thumbY = top + (viewH - thumbH) * (m_scrollY / maxScroll);
+    dl->AddRectFilled(ImVec2(x0, top), ImVec2(x0 + barW, top + viewH), IM_COL32(0, 0, 0, 60));
+    dl->AddRectFilled(ImVec2(x0 + 2.0f, thumbY), ImVec2(x0 + barW - 2.0f, thumbY + thumbH),
+                      m_draggingScroll ? Theme::Colors::Accent : Theme::Colors::Line, 3.0f);
+
+    ImGui::SetCursorScreenPos(ImVec2(x0, top));
+    ImGui::InvisibleButton("##vscroll", ImVec2(barW, viewH));
+    if (ImGui::IsItemActivated()) m_draggingScroll = true;
+    if (m_draggingScroll) {
+        if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            const float track = std::max(viewH - thumbH, 1.0f);
+            const float rel = (ImGui::GetIO().MousePos.y - top - thumbH * 0.5f) / track;
+            m_scrollY = std::clamp(rel, 0.0f, 1.0f) * maxScroll;
+        } else {
+            m_draggingScroll = false;
+        }
+    }
+}
+
+void TimelinePanel::HandleVerticalScroll(const Layout& l) {
+    ImGuiIO& io = ImGui::GetIO();
+    if (io.MouseWheel == 0.0f) return;
+    const ImVec2 m = io.MousePos;
+    const bool inArea = m.x >= l.Origin.x && m.x <= l.Origin.x + l.TrackX + l.Width &&
+                        m.y >= l.Origin.y && m.y <= l.Origin.y + l.Height;
+    if (!inArea) return;
+    // Над колонкой имён масштабировать нечего, поэтому колесо там прокручивает.
+    const bool overNames = m.x < l.Origin.x + l.TrackX;
+    if (!overNames && !io.KeyCtrl) return;
+    m_scrollY -= io.MouseWheel * 48.0f;
+    const float maxScroll = std::max(0.0f, m_contentH - std::max(l.Height - l.RulerH, 1.0f));
+    m_scrollY = std::clamp(m_scrollY, 0.0f, maxScroll);
+}
+
+// Полоса, разделяющая таймлайн на зоны.
+//
+// Зачем вообще зоны. Монтаж и покадровая анимация — два разных занятия с
+// разным масштабом мысли: в монтаже двигают куски по несколько секунд, в
+// анимации — отдельные ключи. Вперемешку они мешают друг другу: строка с
+// именем камеры выглядит как ещё одна дорожка ключей, а десяток каналов
+// поворота отодвигает монтаж за нижний край. Разделив их полосой и дав разную
+// высоту строк, мы делаем видимым то, что и так верно по смыслу.
+float TimelinePanel::DrawZoneHeader(const Layout& l, float y, ImDrawList* dl, const char* id,
+                                    const char* label, const char* hint, bool& open) {
+    const ImVec2 a(l.Origin.x, y);
+    const ImVec2 b(l.Origin.x + l.TrackX + l.Width, y + kZoneHeader);
+    dl->AddRectFilled(a, b, Theme::Colors::PanelRaised);
+    dl->AddLine(ImVec2(a.x, b.y), ImVec2(b.x, b.y), Theme::Colors::Line, 1.0f);
+
+    // Треугольник сворачивания.
+    const ImVec2 c(a.x + 12.0f, (a.y + b.y) * 0.5f);
+    const ImU32 arrow = Theme::Colors::TextDim;
+    if (open) dl->AddTriangleFilled(ImVec2(c.x - 4.0f, c.y - 2.5f), ImVec2(c.x + 4.0f, c.y - 2.5f),
+                                    ImVec2(c.x, c.y + 3.5f), arrow);
+    else      dl->AddTriangleFilled(ImVec2(c.x - 2.5f, c.y - 4.0f), ImVec2(c.x - 2.5f, c.y + 4.0f),
+                                    ImVec2(c.x + 3.5f, c.y), arrow);
+
+    dl->AddText(ImVec2(a.x + 24.0f, a.y + 2.0f), Theme::Colors::Text, label);
+    if (hint && *hint) {
+        const float labelW = ImGui::CalcTextSize(label).x;
+        dl->AddText(ImVec2(a.x + 32.0f + labelW, a.y + 2.0f), Theme::Colors::TextFaint, hint);
+    }
+
+    ImGui::PushID(id);
+    ImGui::SetCursorScreenPos(a);
+    if (ImGui::InvisibleButton("##zone", ImVec2(std::max(b.x - a.x, 1.0f), kZoneHeader))) {
+        open = !open;
+    }
+    ImGui::PopID();
+    return kZoneHeader;
+}
+
 void TimelinePanel::DrawTimelineTab(DirectorHost& host, const Layout& l) {
     AnimationDocument& doc = host.Document();
     ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -1018,27 +1145,58 @@ void TimelinePanel::DrawTimelineTab(DirectorHost& host, const Layout& l) {
 
     const int selectedId = host.SelectedId();
     int clipColorIndex = 0;
+    const float top = l.Origin.y + l.RulerH;
+    const float bottom = l.Origin.y + l.Height;
+    y = BeginTracks(l);
 
-    // Монтаж камер — самая внешняя структура ролика, поэтому он идёт первой
-    // строкой, над клипами и ключами. Показывается, только когда склейки есть:
-    // пустая дорожка мешала бы всем, кто снимает одной камерой. Завести её
-    // можно из меню «+ Дорожка».
-    if (!doc.Cameras.Cuts.empty() && y < l.Origin.y + l.Height) {
-        DrawCameraRow(host, l, y, dl);
-        y += l.RowH;
+    // Уехавшие за край строки НЕ рисуются, но их высота всё равно
+    // накапливается: иначе прокрутка не знала бы, сколько ещё содержимого
+    // ниже, и полоса врала бы. Раньше здесь стоял break, и в этом была вся
+    // беда: цикл обрывался, остаток дорожек просто переставал существовать.
+    auto visible = [&](float rowTop, float rowH) {
+        return rowTop + rowH >= top && rowTop <= bottom;
+    };
+
+    // --- ЗОНА МОНТАЖА ------------------------------------------------------
+    // Склейки камер, блоки клипов и фонограмма: всё, из чего собирается ролик
+    // крупными кусками. Строки здесь высокие — в них лежит текст, и их таскают
+    // мышью.
+    const int montageRows = (doc.Cameras.Cuts.empty() ? 0 : 1) + (int)doc.ClipTracks.size() +
+                            (doc.Audio.Loaded() ? 1 : 0);
+    if (montageRows > 0) {
+        const std::string hint = "— " + TrackCountLabel(montageRows);
+        y += DrawZoneHeader(l, y, dl, "montage", T("МОНТАЖ"), hint.c_str(), m_montageOpen);
+
+        if (m_montageOpen) {
+            if (!doc.Cameras.Cuts.empty()) {
+                if (visible(y, kMontageRow)) DrawCameraRow(host, l, y, kMontageRow, dl);
+                y += kMontageRow;
+            }
+            for (ClipTrack& track : doc.ClipTracks) {
+                if (visible(y, kMontageRow)) {
+                    DrawClipTrack(host, track, l, y, kMontageRow, dl, clipColorIndex++);
+                }
+                y += kMontageRow;
+            }
+            // Фонограмма — в зоне монтажа, а не в конце списка: звук задаёт ритм
+            // ролика, и смотреть на него надо рядом со склейками, под которые
+            // его и подгоняют.
+            if (doc.Audio.Loaded()) {
+                if (visible(y, kAudioRow)) DrawAudioRow(host, l, y, kAudioRow, dl);
+                y += kAudioRow;
+            }
+        }
+        y += 4.0f; // воздух между зонами
     }
 
-
-    // Дорожки клипов идут первыми: это «крупные мазки» ролика, а покадровые
-    // ключи — доводка поверх них.
-    for (ClipTrack& track : doc.ClipTracks) {
-        if (y > l.Origin.y + l.Height) break;
-        DrawClipTrack(host, track, l, y, dl, clipColorIndex++);
-        y += l.RowH;
+    // --- ЗОНА АНИМАЦИИ -----------------------------------------------------
+    if (!doc.Tracks.empty()) {
+        const std::string hint = "— " + TrackCountLabel((int)doc.Tracks.size());
+        y += DrawZoneHeader(l, y, dl, "anim", T("АНИМАЦИЯ"), hint.c_str(), m_animationOpen);
     }
+    if (!m_animationOpen) { EndTracks(l, y, dl); return; }
 
     for (Track& track : doc.Tracks) {
-        if (y > l.Origin.y + l.Height) break;
         if (!m_filter.empty()) {
             const std::string name = TargetName(host.CurrentScene(), track.TargetId);
             const std::string label = T(PropertyInfoOf(track.Prop).Label);
@@ -1047,11 +1205,14 @@ void TimelinePanel::DrawTimelineTab(DirectorHost& host, const Layout& l) {
                 track.JointName.find(m_filter) == std::string::npos) continue;
         }
 
-        y += DrawTrackHeader(host, track, l, y, dl, track.TargetId == selectedId);
+        if (visible(y, l.RowH)) {
+            y += DrawTrackHeader(host, track, l, y, dl, track.TargetId == selectedId);
+        } else {
+            y += l.RowH; // та же высота, что вернул бы заголовок
+        }
         if (track.Expanded) {
             for (int c = 0; c < track.ChannelCount(); ++c) {
-                if (y > l.Origin.y + l.Height) break;
-                DrawKeysRow(host, track, c, l, y, dl);
+                if (visible(y, l.RowH)) DrawKeysRow(host, track, c, l, y, dl);
                 y += l.RowH;
             }
         } else if (track.ChannelCount() == 1) {
@@ -1061,29 +1222,28 @@ void TimelinePanel::DrawTimelineTab(DirectorHost& host, const Layout& l) {
         }
     }
 
-    if (doc.Audio.Loaded() && y < l.Origin.y + l.Height) {
-        DrawAudioRow(host, l, y, dl);
-        y += l.RowH * 1.6f;
-    }
-
     if (doc.Tracks.empty() && doc.ClipTracks.empty()) {
         dl->AddText(ImVec2(l.Origin.x + 16.0f, l.Origin.y + l.RulerH + 14.0f), Theme::Colors::TextDim,
                     T("Дорожек пока нет."));
         dl->AddText(ImVec2(l.Origin.x + 16.0f, l.Origin.y + l.RulerH + 34.0f), Theme::Colors::TextFaint,
-                    T("Выберите объект и нажмите «+ Add Track», либо включите Auto Key и просто двигайте объект."));
+                    T("Выберите объект и нажмите «+ Дорожка», либо включите авто-ключ и просто двигайте объект."));
     }
+
+    EndTracks(l, y, dl);
 }
 
 void TimelinePanel::DrawDopeTab(DirectorHost& host, const Layout& l) {
     AnimationDocument& doc = host.Document();
     ImDrawList* dl = ImGui::GetWindowDrawList();
     Scene& scene = host.CurrentScene();
-    float y = l.Origin.y + l.RulerH;
+    const float top = l.Origin.y + l.RulerH;
+    const float bottom = l.Origin.y + l.Height;
+    float y = BeginTracks(l);
 
     // Dope Sheet: одна строка на дорожку, все каналы сведены в один ряд ромбов.
     // Так виден ТАЙМИНГ целиком, без разбиения на оси — им и правят ритм сцены.
     for (Track& track : doc.Tracks) {
-        if (y > l.Origin.y + l.Height) break;
+        if (y + l.RowH < top || y > bottom) { y += l.RowH; continue; }
 
         dl->AddText(ImVec2(l.Origin.x + 10.0f, y + 3.0f),
                     track.Muted ? Theme::Colors::TextFaint : Theme::Colors::Text,
@@ -1146,6 +1306,8 @@ void TimelinePanel::DrawDopeTab(DirectorHost& host, const Layout& l) {
         dl->AddText(ImVec2(l.Origin.x + 16.0f, l.Origin.y + l.RulerH + 14.0f), Theme::Colors::TextDim,
                     T("Ключей пока нет — Dope Sheet показывает тайминг уже поставленных ключей."));
     }
+
+    EndTracks(l, y, dl);
 }
 
 // Всё, что относится к чтению графика, — в одном меню. Тремя отдельными
@@ -1704,6 +1866,7 @@ void TimelinePanel::Draw(DirectorHost& host) {
 
     const bool areaHovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows);
     HandleZoomPan(host, l, areaHovered);
+    HandleVerticalScroll(l);
 
     switch (m_tab) {
         case 1: DrawGraphTab(host, l); break;

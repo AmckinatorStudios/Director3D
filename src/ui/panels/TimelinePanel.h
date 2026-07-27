@@ -73,9 +73,13 @@ private:
     void DrawKeysRow(DirectorHost& host, Track& track, int channel, const Layout& l,
                      float y, ImDrawList* dl);
     void DrawClipTrack(DirectorHost& host, ClipTrack& track, const Layout& l, float y,
-                       ImDrawList* dl, int colorIndex);
-    void DrawAudioRow(DirectorHost& host, const Layout& l, float y, ImDrawList* dl);
-    void DrawCameraRow(DirectorHost& host, const Layout& l, float y, ImDrawList* dl);
+                       float rowH, ImDrawList* dl, int colorIndex);
+    void DrawAudioRow(DirectorHost& host, const Layout& l, float y, float rowH, ImDrawList* dl);
+    void DrawCameraRow(DirectorHost& host, const Layout& l, float y, float rowH, ImDrawList* dl);
+    // Полоса-заголовок зоны таймлайна. Возвращает её высоту; open переключается
+    // кликом по треугольнику.
+    float DrawZoneHeader(const Layout& l, float y, ImDrawList* dl, const char* id,
+                         const char* label, const char* hint, bool& open);
     // Список камер сцены для меню выбора; помечает текущую галочкой.
     void DrawCameraPicker(DirectorHost& host, int currentId, int cutIndex);
     void DrawAddTrackMenu(DirectorHost& host);
@@ -131,6 +135,32 @@ private:
     int m_draggingBlockIndex = -1;
     int m_draggingBlockEdge = 0;    // 0 — целиком, -1 — левый край, +1 — правый
     int m_draggingCut = -1;         // индекс перетаскиваемой склейки монтажа
+    // Свёрнутость зон. Монтаж и анимация — разные занятия, и человек обычно
+    // сидит в одном из них: свернув чужую зону, он освобождает место, не теряя
+    // содержимого.
+    bool m_montageOpen = true;
+    bool m_animationOpen = true;
+
+    // --- Вертикальная прокрутка области дорожек ----------------------------
+    // Раньше её не было вообще: строки рисовались от линейки вниз, и всё, что
+    // не влезло, просто не рисовалось. С двумя десятками каналов у персонажа
+    // это означало, что часть анимации недоступна и об этом ничего не
+    // сообщается — дорожка не «спрятана», её как будто нет.
+    //
+    // Колесо над ВРЕМЕННОЙ областью по-прежнему меняет масштаб времени: это
+    // главный жест таймлайна, и переучивать ему незачем. Прокрутка повешена
+    // на колесо над КОЛОНКОЙ ИМЁН (там масштабировать нечего) и на Ctrl+колесо
+    // в любом месте, плюс есть полоса прокрутки, которую можно тащить.
+    float m_scrollY = 0.0f;
+    float m_contentH = 0.0f;   // высота содержимого, измеренная на прошлом кадре
+    bool m_draggingScroll = false;
+
+    // Открывает область дорожек: ставит отсечение и возвращает верх первой
+    // строки с учётом прокрутки.
+    float BeginTracks(const Layout& l);
+    // Закрывает область: запоминает высоту содержимого, рисует полосу.
+    void EndTracks(const Layout& l, float yEnd, ImDrawList* dl);
+    void HandleVerticalScroll(const Layout& l);
 
     // Graph Editor: вертикальный масштаб (значения) и какие каналы показывать.
     float m_valueCenter = 0.0f;
