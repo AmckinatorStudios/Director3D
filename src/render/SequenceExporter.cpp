@@ -123,12 +123,20 @@ bool SequenceExporter::Step(Scene& scene, StageRenderer& renderer, AnimationDocu
         sage::fx::UpdateEmitters(scene, renderer.Particles(), 1.0f / m_fps);
 
         LightingEnvironment env = CollectVisibleLighting(scene);
-        renderer.RenderShadow(scene, env);
 
         // Камера выбирается НА КАЖДОМ КАДРЕ, а не один раз на весь экспорт:
         // в этом и состоит монтаж. Настройка из диалога рендера остаётся
         // запасной — ею снимается всё, где склеек нет.
+        //
+        // Выбор стоит ДО прохода теней: каскады строятся под камеру кадра, и
+        // считать их до того, как известно, какая камера снимает, не из чего.
         const int cameraId = doc.CameraAt(time, m_settings.CameraId);
+
+        ShadowMap::CameraView shadowCam;
+        const bool haveShadowCam = renderer.CascadeViewOf(
+            scene, cameraId,
+            (float)m_target->Width() / (float)std::max(m_target->Height(), 1), shadowCam);
+        renderer.RenderShadow(scene, env, haveShadowCam ? &shadowCam : nullptr);
 
         const int samples = std::max(m_settings.Samples, 1);
         if (samples == 1) {

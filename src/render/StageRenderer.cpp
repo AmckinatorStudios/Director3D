@@ -165,6 +165,12 @@ Shader& EdgeShader() {
     return *s;
 }
 
+// С какого радиуса сцены переходить на каскады. Ниже него одна карта, севшая
+// вплотную по габаритам, даёт тексель не хуже — а стоит один проход вместо
+// трёх. Сорок метров — это площадка, на которой одна карта 2048 даёт уже
+// четыре сантиметра на тексель, и ступеньки становятся заметны вблизи.
+constexpr float kCascadeSceneRadius = 40.0f;
+
 int ShadingCode(ShadingMode mode) {
     // Коды движкового батча: 0 — освещённый, 1 — плоский цвет, 2 — нормали.
     switch (mode) {
@@ -187,7 +193,8 @@ void StageRenderer::Init(int sceneMsaa) {
     // Разрешение карты теней берём из настроек движка: оно уже есть в Config
     // (SAGE_SHADOW_RES, качество графики), и прибивать здесь своё число значило
     // бы игнорировать выбор человека.
-    m_shadows.emplace(std::max(512, sage::EngineConfig::Get().ShadowResolution));
+    m_shadows.emplace(std::max(512, sage::EngineConfig::Get().ShadowResolution),
+                      sage::EngineConfig::Get().ShadowCascades);
     // MSAA — только у буферов СЦЕНЫ. Буферы пост-обработки принимают уже
     // готовую картинку, геометрии в них нет, и сглаживать там нечего.
     m_stageFbo.emplace(m_stageW, m_stageH, m_sceneMsaa);
@@ -259,7 +266,26 @@ static bool ShadowBounds(Scene& scene, glm::vec3& center, float& radius) {
     return radius > 0.01f;
 }
 
-void StageRenderer::RenderShadow(Scene& scene, const LightingEnvironment& env) {
+bool StageRenderer::CascadeViewOf(Scene& scene, int cameraEntityId, float aspect,
+                                  ShadowMap::CameraView& out) const {
+    const CameraFrameInfo frame = CameraFrameOf(scene, cameraEntityId, aspect);
+    if (!frame.HasCamera) return false;
+
+    out.Position = frame.Position;
+    // Направление и «верх» достаём из матрицы вида: камера сцены — это
+    // компонент с трансформом, готового объекта Camera у неё нет.
+    const glm::mat3 basis = glm::mat3(frame.View);
+    out.Forward = -glm::vec3(basis[0][2], basis[1][2], basis[2][2]);
+    out.Up = glm::vec3(basis[0][1], basis[1][1], basis[2][1]);
+    out.FovY = glm::radians(frame.Fov);
+    out.Aspect = frame.Aspect;
+    out.Near = 0.1f;
+    out.ShadowDistance = sage::EngineConfig::Get().ShadowDistance;
+    return true;
+}
+
+void StageRenderer::RenderShadow(Scene& scene, const LightingEnvironment& env,
+                                 const ShadowMap::CameraView* camera) {
     SAGE_PROFILE("Тени");
     Window& window = sage::Application::Get().GetWindow();
     HiddenObjects hidden(scene); // спрятанное не отбрасывает тень
@@ -285,10 +311,24 @@ void StageRenderer::RenderShadow(Scene& scene, const LightingEnvironment& env) {
         center = glm::vec3(0.0f);
         radius = 28.0f;
     }
-    m_shadows->SetLightMatrix(env.Sun.Direction, center, radius);
-    m_shadows->BeginRender();
-    m_batch.RenderDepth(scene, m_shadows->LightMatrix());
-    sage::anim::DrawAnimatedModelsDepth(scene, m_shadows->LightMatrix());
+    // КОГДА ВКЛЮЧАТЬ КАСКАДЫ. Только на большой сцене и только если известна
+    // камера. На павильонной постановке (а это обычный случай инструмента)
+    // коробка выше и так садится вплотную, тексель выходит мелким, и каскады
+    // означали бы три прохода геометрии ради той же картинки. Каскады нужны
+    // ровно там, где одной карте не хватает разрешения на всю даль.
+    const bool bigScene = radius > kCascadeSceneRadius;
+    if (camera && bigScene && m_shadows->CascadeCount() > 1) {
+        m_shadows->SetCascades(env.Sun.Direction, *camera);
+    } else {
+        m_shadows->SetLightMatrix(env.Sun.Direction, center, radius);
+    }
+    for (int c = 0; c < m_shadows->CascadeCount(); ++c) {
+        m_shadows->BeginRender(c);
+        m_batch.RenderDepth(scene, m_shadows->LightMatrix(c));
+        sage::anim::DrawAnimatedModelsDepth(scene, m_shadows->LightMatrix(c));
+        // Одна карта: остальные каскады — её копии, рисовать в них незачем.
+        if (m_shadows->ActiveCascades() == 1) break;
+    }
     m_shadows->EndRender(window.Width(), window.Height());
 }
 
@@ -299,12 +339,11 @@ void StageRenderer::DrawScene(Scene& scene, const LightingEnvironment& env, cons
 
     if (wireframe) device.SetPolygonMode(sage::rhi::PolygonMode::Line);
     m_stats = m_batch.RenderColor(scene, view, proj, viewPos, env,
-                                  m_shadows->LightMatrix(), m_shadows->DepthTexture(),
-                                  /*shadowsEnabled=*/true, ShadingCode(shading));
+                                  ShadowBinding(*m_shadows, true), ShadingCode(shading));
     if (wireframe) device.SetPolygonMode(sage::rhi::PolygonMode::Fill);
 
     sage::anim::DrawAnimatedModels(scene, view, proj, viewPos, env,
-                                   m_shadows->LightMatrix(), m_shadows->DepthTexture(), true);
+                                   ShadowBinding(*m_shadows, true));
     m_particles->DrawFromView(view, proj);
 }
 

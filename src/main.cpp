@@ -18,6 +18,7 @@
 #include <string>
 
 #include "sage/core/GameModule.h"
+#include "sage/core/Config.h"
 #include "sage/core/Log.h"
 
 #include "DirectorLayer.h"
@@ -98,6 +99,17 @@ sage::Application* sage::CreateApplication(int argc, char** argv) {
 
     Log::Init("director3d.log");
     LOG_INFO("Director") << "Director 3D запускается...";
+
+    // Настройки движка: файл sage.cfg рядом с бинарником, поверх — переменные
+    // SAGE_*. Без этого шага Director 3D игнорировал и то, и другое: разрешение
+    // теней, число каскадов и качество графики читались из значений по
+    // умолчанию, а SAGE_SHADOW_RES не действовал вовсе.
+    {
+        sage::EngineConfig cfg;
+        cfg.LoadFile("sage.cfg"); // молча пропускается, если файла нет
+        cfg.ApplyEnvOverrides();
+        sage::EngineConfig::Set(cfg);
+    }
 
     sage::AppConfig config;
     config.Width = 1600;

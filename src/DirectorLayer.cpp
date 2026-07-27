@@ -1044,7 +1044,16 @@ void DirectorLayer::OnRender() {
 #ifdef D3D_PROFILE_FRAME
     auto t0 = std::chrono::steady_clock::now();
 #endif
-    m_renderer.RenderShadow(*m_scene, env);
+    // Каскады строим под камеру КАДРА (с учётом монтажа): проход теней один на
+    // оба вида, и выбирать между ними надо в пользу той картинки, которая
+    // уйдёт в ролик.
+    ShadowMap::CameraView shadowCam;
+    const bool haveShadowCam =
+        m_renderer.CascadeViewOf(*m_scene, EffectiveCameraId(),
+                                 (float)m_renderer.RenderViewWidth() /
+                                     (float)std::max(m_renderer.RenderViewHeight(), 1),
+                                 shadowCam);
+    m_renderer.RenderShadow(*m_scene, env, haveShadowCam ? &shadowCam : nullptr);
 #ifdef D3D_PROFILE_FRAME
     auto t1 = std::chrono::steady_clock::now();
 #endif

@@ -66,11 +66,27 @@ public:
 
     void SetStageSize(int w, int h);
     void SetRenderViewSize(int w, int h);
+    int RenderViewWidth() const { return m_viewW; }
+    int RenderViewHeight() const { return m_viewH; }
     int StageWidth() const { return m_stageW; }
     int StageHeight() const { return m_stageH; }
 
     // Общий для обоих кадров depth-проход солнца. Зовётся раз в кадр до Render*.
-    void RenderShadow(Scene& scene, const LightingEnvironment& env);
+    // Проход теней. camera — камера, под которую строить каскады (nullptr —
+    // одна карта, натянутая на габариты сцены).
+    //
+    // ОДИН проход на кадр, хотя видов два (вьюпорт и Render View). Так и
+    // задумано: рисовать сцену в карту теней дважды ради второго вида — это
+    // удвоение самой дорогой части кадра ради разницы, которую видно только
+    // на огромной сцене. Каскады поэтому строятся под ОДНУ камеру, и это
+    // камера кадра — та, ради которой снимают ролик.
+    void RenderShadow(Scene& scene, const LightingEnvironment& env,
+                      const ShadowMap::CameraView* camera = nullptr);
+
+    // Параметры камеры для каскадов по объекту-камере сцены. Пустой результат
+    // (false), если камеры нет.
+    bool CascadeViewOf(Scene& scene, int cameraEntityId, float aspect,
+                       ShadowMap::CameraView& out) const;
 
     // Рабочий вьюпорт. camera — свободная камера инструмента; при preset ==
     // SceneCamera вместо неё берётся кадр активной камеры сцены (cameraEntityId).
