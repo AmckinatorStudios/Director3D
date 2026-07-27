@@ -4,10 +4,13 @@
 #include <cmath>
 
 #include <glm/gtc/matrix_transform.hpp>
+#define GLM_ENABLE_EXPERIMENTAL
+#include <glm/gtx/component_wise.hpp>
 
 #include "anim/DirectorComponents.h"
 #include "sage/anim/AnimationSystem.h"
 #include "sage/core/Application.h"
+#include "sage/core/Config.h"
 #include "sage/ecs/CameraView.h"
 #include "sage/ecs/LightSystem.h"
 #include "sage/render/ResourceManager.h"
@@ -180,7 +183,10 @@ int ShadingCode(ShadingMode mode) {
 
 void StageRenderer::Init(int sceneMsaa) {
     m_sceneMsaa = std::max(sceneMsaa, 1);
-    m_shadows.emplace(2048);
+    // Разрешение карты теней берём из настроек движка: оно уже есть в Config
+    // (SAGE_SHADOW_RES, качество графики), и прибивать здесь своё число значило
+    // бы игнорировать выбор человека.
+    m_shadows.emplace(std::max(512, sage::EngineConfig::Get().ShadowResolution));
     // MSAA — только у буферов СЦЕНЫ. Буферы пост-обработки принимают уже
     // готовую картинку, геометрии в них нет, и сглаживать там нечего.
     m_stageFbo.emplace(m_stageW, m_stageH, m_sceneMsaa);
@@ -224,10 +230,60 @@ void StageRenderer::DrawSky(const LightingEnvironment& env, const glm::mat4& vie
     m_sky->Draw(view, proj, env.Skybox.TopColor, env.Skybox.HorizonColor);
 }
 
+// Габариты того, что реально отбрасывает тень. Считаются каждый кадр: объекты
+// двигаются, и коробка, подогнанная один раз, назавтра оказалась бы не той.
+static bool ShadowBounds(Scene& scene, glm::vec3& center, float& radius) {
+    auto& reg = scene.Registry();
+    glm::vec3 lo(1e9f), hi(-1e9f);
+    bool any = false;
+
+    auto add = [&](entt::entity e) {
+        if (HiddenObjects::IsHidden(scene, e)) return;
+        const glm::vec3 p = glm::vec3(scene.WorldMatrix(e)[3]);
+        // Габарит объекта берём по масштабу: точные границы меша потребовали бы
+        // держать их рядом с геометрией, а промах здесь стоит дёшево — коробка
+        // чуть больше нужного, тень чуть крупнее текселем.
+        const Transform& tf = reg.get<Transform>(e);
+        const float extent = glm::compMax(glm::abs(tf.Scale)) * 1.75f + 0.5f;
+        lo = glm::min(lo, p - extent);
+        hi = glm::max(hi, p + extent);
+        any = true;
+    };
+    for (auto e : reg.view<MeshRendererComponent, Transform>()) add(e);
+    for (auto e : reg.view<AnimatedModelComponent, Transform>()) add(e);
+    if (!any) return false;
+
+    center = (lo + hi) * 0.5f;
+    radius = glm::length(hi - lo) * 0.5f;
+    return radius > 0.01f;
+}
+
 void StageRenderer::RenderShadow(Scene& scene, const LightingEnvironment& env) {
     Window& window = sage::Application::Get().GetWindow();
     HiddenObjects hidden(scene); // спрятанное не отбрасывает тень
-    m_shadows->SetLightMatrix(env.Sun.Direction, glm::vec3(0.0f), 28.0f);
+
+    // ПОДГОНКА КОРОБКИ ТЕНЕЙ ПОД СЦЕНУ.
+    //
+    // Раньше здесь стояло «центр в начале координат, радиус 28 метров» — при
+    // карте 2048 это 2.7 сантиметра на тексель НЕЗАВИСИМО от того, что в
+    // сцене. Комнате из трёх предметов доставалась точность, рассчитанная на
+    // стометровую площадку, и тень выглядела крупноблочной именно поэтому.
+    //
+    // Теперь радиус — по фактическим габаритам. Сцена из демонстрации
+    // укладывается примерно в 12 метров, то есть тексель становится втрое
+    // мельче на том же разрешении. Ограничение снизу не даёт коробке
+    // схлопнуться на одиноком объекте (тень стала бы резче геометрии и
+    // проявила бы ступеньки самой карты), сверху — не даёт уползти в
+    // бессмысленную точность на огромной сцене.
+    glm::vec3 center(0.0f);
+    float radius = 28.0f;
+    if (ShadowBounds(scene, center, radius)) {
+        radius = glm::clamp(radius * 1.15f, 4.0f, 120.0f);
+    } else {
+        center = glm::vec3(0.0f);
+        radius = 28.0f;
+    }
+    m_shadows->SetLightMatrix(env.Sun.Direction, center, radius);
     m_shadows->BeginRender();
     m_batch.RenderDepth(scene, m_shadows->LightMatrix());
     sage::anim::DrawAnimatedModelsDepth(scene, m_shadows->LightMatrix());
