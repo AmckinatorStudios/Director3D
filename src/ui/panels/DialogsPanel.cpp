@@ -130,10 +130,15 @@ std::string HumanDuration(float seconds) {
     return out;
 }
 
-// Заголовок окна с постоянным идентификатором: видимая часть переводится, а
-// «###id» держит ImGui-состояние окна на месте при смене языка.
-std::string TitleWithId(const char* text, const char* id) {
-    return std::string(T(text)) + "###" + id;
+// Заголовок окна с постоянным идентификатором: видимая часть — уже переведённый
+// текст, а «###id» держит ImGui-состояние окна на месте при смене языка.
+//
+// Текст принимается ПЕРЕВЕДЁННЫМ, а не переводится внутри. Разница не
+// стилистическая: проверка полноты перевода (scripts/check_i18n.py) ищет в коде
+// literal внутри T(...), и строка, отданная сюда голой, из-под неё выпадает —
+// молча остаётся без перевода и молча проходит проверку.
+std::string TitleWithId(const char* translated, const char* id) {
+    return std::string(translated) + "###" + id;
 }
 
 } // namespace
@@ -199,7 +204,7 @@ void DialogsPanel::Draw(DirectorHost& host) {
 
 void DialogsPanel::DrawRenderProgress(DirectorHost& host) {
     SequenceExporter& exporter = host.Exporter();
-    const std::string title = TitleWithId("Идёт рендер", "d3d_render_progress");
+    const std::string title = TitleWithId(T("Идёт рендер"), "d3d_render_progress");
 
     if (exporter.Active() && !m_progressOpen) {
         m_progressOpen = true;
@@ -264,7 +269,7 @@ void DialogsPanel::DrawRenderProgress(DirectorHost& host) {
 
 void DialogsPanel::DrawRenderOutcome(DirectorHost& host) {
     RenderOutcome& outcome = host.LastRender();
-    const std::string title = TitleWithId("Рендер", "d3d_render_outcome");
+    const std::string title = TitleWithId(T("Рендер"), "d3d_render_outcome");
 
     // Ждём, пока закроется всё остальное: открывать модалку поверх модалки
     // прогресса, которая закрывается в этом же кадре, — верный способ получить
